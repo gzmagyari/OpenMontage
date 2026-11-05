@@ -3,9 +3,8 @@
 #   docker build -f docker/Dockerfile -t openmontage-api .
 #   docker run --init --shm-size=2g -p 8080:8080 --env-file .env -v openmontage-data:/data openmontage-api
 #
-# NOTE: this image currently ships the job/tool API only; the unattended agent runner
-# (which executes OpenMontage's standard pipelines per job) is the next milestone and
-# will add its own runtime pieces here.
+# Ships the full video API: FastAPI job layer + one unattended Claude Agent SDK session
+# per video job (the Claude Code runtime is installed below) + Remotion rendering.
 
 FROM node:22-bookworm-slim AS node
 
@@ -32,11 +31,19 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
  && node --version && npm --version
 
+# The Claude Code runtime the Agent SDK drives (one headless session per video job).
+RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code \
+ && claude --version
+
 WORKDIR /app
 
 # Python dependencies (cached layer).
 COPY requirements.txt requirements-api.txt ./
 RUN pip install -r requirements-api.txt
+
+# Local speech tools the repo treats as present but does not pin in requirements:
+# faster-whisper (word-timestamp captions) and piper-tts (offline TTS fallback).
+RUN pip install faster-whisper piper-tts
 
 # Remotion dependencies (cached layer) + Chrome Headless Shell for renders.
 COPY remotion-composer/package.json remotion-composer/package-lock.json remotion-composer/

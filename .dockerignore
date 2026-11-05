@@ -37,7 +37,7 @@ gcp-*.json
 service-account*.json
 service_account*.json
 .youtube-token.json
-.agents
-.claude
+# .agents (skills) and .claude (project agent settings) stay IN the image:
+# each video job runs a Claude agent session that reads them (Layer 3 is not optional).
 .backlot
 ink-theater

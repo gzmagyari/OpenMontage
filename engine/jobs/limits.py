@@ -92,6 +92,8 @@ class Limits:
         self._limiters: dict[str, FifoLimiter] = {
             "render": FifoLimiter("render", settings.render_concurrency),
             "tool": FifoLimiter("tool", max(1, settings.max_active_jobs)),
+            "agent": FifoLimiter("agent", max(1, getattr(settings, "agent_concurrency",
+                                                         settings.max_active_jobs))),
         }
 
     def get(self, name: str) -> FifoLimiter:

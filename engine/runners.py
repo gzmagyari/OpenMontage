@@ -1,9 +1,8 @@
 """Job runners.
 
 TOOL_RUN executes one registry tool as a job (internal API). VIDEO and REVISE
-will run OpenMontage's standard agent-driven pipelines unattended; until that
-runner lands, those kinds are not registered and submits are refused with
-``not_implemented`` instead of accepting jobs that cannot finish.
+run OpenMontage's standard agent-driven flow unattended (engine/agent): one
+Claude Agent SDK session per job, journaled as the job's chat stream.
 """
 
 from __future__ import annotations
@@ -114,7 +113,9 @@ async def run_tool(ctx: JobContext) -> dict[str, Any]:
 
 
 def build_runners() -> dict[JobKind, Any]:
-    return {JobKind.TOOL_RUN: run_tool}
+    from engine.agent import run_revise, run_video
+
+    return {JobKind.TOOL_RUN: run_tool, JobKind.VIDEO: run_video, JobKind.REVISE: run_revise}
 
 
 __all__ = ["build_runners", "run_tool"]

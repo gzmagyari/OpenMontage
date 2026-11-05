@@ -29,6 +29,10 @@ def test_contract_and_cost(monkeypatch):
     assert tool.get_info()["provider"] == "fal.ai"
     assert tool.estimate_cost({"model": "kling-v2-standard", "audio_duration_seconds": 10}) == 0.562
     assert tool.estimate_cost({"model": "omnihuman-1.5", "audio_duration_seconds": 10}) == 1.60
+    # composite = plate ($0.035/s) + lip-sync pass ($0.05/s); fix mode = sync pass only
+    assert tool.estimate_cost({"model": "h3max-acting", "audio_duration_seconds": 10}) == 0.85
+    assert tool.estimate_cost({"audio_duration_seconds": 10}) == 0.85  # composite is the default
+    assert tool.estimate_cost({"video_url": "https://x/v.mp4", "audio_duration_seconds": 10}) == 0.50
     with pytest.raises(PriceQuoteRequired):
         tool.estimate_cost({"model": "veed-fabric-1.0"})  # no audio length to bill against
 
@@ -122,9 +126,103 @@ def test_error_redacts_fal_key(monkeypatch):
     monkeypatch.setenv("FAL_KEY", secret)
     with patch("requests.post", side_effect=RuntimeError(f"request used {secret}")):
         result = FalAvatar().execute(
-            {"image_url": "https://x/face.jpg", "audio_url": "https://x/line.mp3"}
+            {"image_url": "https://x/face.jpg", "audio_url": "https://x/line.mp3",
+             "model": "kling-v2-standard"}
         )
 
     assert result.success is False
     assert secret not in result.error
     assert "[REDACTED]" in result.error
+
+
+def _chain_tool(monkeypatch, tmp_path, peak=0.8, audio_seconds=9.0):
+    """A FalAvatar with the local-media steps stubbed (no ffmpeg/ffprobe needed)."""
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    tool = FalAvatar()
+    tool._POLL_INTERVAL_SECONDS = 0
+    monkeypatch.setattr(FalAvatar, "_audio_peak", staticmethod(lambda path: peak))
+    monkeypatch.setattr(FalAvatar, "_probe_duration", staticmethod(lambda path: audio_seconds))
+    monkeypatch.setattr(FalAvatar, "_mux_audio",
+                        staticmethod(lambda video, audio, dst: dst.write_bytes(video.read_bytes()) or dst))
+    monkeypatch.setattr(FalAvatar, "_upload", staticmethod(lambda path, key: f"https://up.example/{path.name}"))
+    audio = tmp_path / "line.wav"
+    audio.write_bytes(b"RIFF-fake")
+    return tool, audio
+
+
+def test_composite_runs_plate_then_sync_and_remuxes(tmp_path, monkeypatch):
+    tool, audio = _chain_tool(monkeypatch, tmp_path)
+    out = tmp_path / "take.mp4"
+
+    def submit(url, **kw):
+        n = url.count("lip-sync")
+        return _response(json_data={
+            "status_url": f"https://queue.fal.run/x/requests/r{n}/status",
+            "response_url": f"https://queue.fal.run/x/requests/r{n}",
+        })
+
+    results = iter([
+        _response(json_data={"status": "COMPLETED"}),
+        _response(json_data={"video": {"url": "https://media.example/plate.mp4"}, "duration": 10.0}),
+        _response(json_data={"status": "COMPLETED"}),
+        _response(json_data={"video": {"url": "https://media.example/synced.mp4"}, "duration": 9.0}),
+        _response(content=b"fake-synced-mp4"),
+    ])
+    with (
+        patch("requests.post", side_effect=submit) as mock_post,
+        patch("requests.get", side_effect=lambda *a, **k: next(results)),
+    ):
+        result = tool.execute({
+            "image_path": str(tmp_path / "face.jpg"),
+            "audio_path": str(audio),
+            "prompt": "she leans toward the lens and talks straight into the camera",
+            "output_path": str(out),
+        })
+
+    assert result.success is True, result.error
+    assert out.read_bytes() == b"fake-synced-mp4"  # the stubbed mux copies the synced video through
+    assert mock_post.call_count == 2
+    plate_payload = mock_post.call_args_list[0].kwargs["json"]
+    assert plate_payload["target_audio_url"] == "https://up.example/line.wav"
+    assert plate_payload["duration"] == 10  # ceil(9.0 + 0.6)
+    sync_payload = mock_post.call_args_list[1].kwargs["json"]
+    assert sync_payload == {"video_url": "https://media.example/plate.mp4",
+                            "audio_url": "https://up.example/line.wav",
+                            "duration_mode": "cut_off", "resolution": "768P"}
+    assert result.cost_usd == round(0.035 * 10.0 + 0.05 * 9.0, 4)
+    assert result.data["cost_breakdown"] == {"plate": 0.35, "sync": 0.45}
+
+
+def test_fix_mode_syncs_an_existing_video(tmp_path, monkeypatch):
+    tool, audio = _chain_tool(monkeypatch, tmp_path)
+    out = tmp_path / "fixed.mp4"
+    post = _response(json_data={"status_url": "https://queue.fal.run/x/requests/r/status",
+                                "response_url": "https://queue.fal.run/x/requests/r"})
+    results = iter([
+        _response(json_data={"status": "COMPLETED"}),
+        _response(json_data={"video": {"url": "https://media.example/synced.mp4"}, "duration": 9.0}),
+        _response(content=b"fake-synced-mp4"),
+    ])
+    with (
+        patch("requests.post", return_value=post) as mock_post,
+        patch("requests.get", side_effect=lambda *a, **k: next(results)),
+    ):
+        result = tool.execute({"video_url": "https://x/acted.mp4", "audio_path": str(audio),
+                               "output_path": str(out)})
+
+    assert result.success is True, result.error
+    assert mock_post.call_count == 1  # no plate: only the lip-sync pass
+    assert mock_post.call_args.kwargs["json"]["video_url"] == "https://x/acted.mp4"
+    assert result.cost_usd == 0.45
+    assert result.data["mode"] == "sync"
+
+
+def test_composite_refuses_silent_audio(tmp_path, monkeypatch):
+    tool, audio = _chain_tool(monkeypatch, tmp_path, peak=0.0001)
+    with patch("requests.post") as mock_post:
+        result = tool.execute({"image_path": str(tmp_path / "face.jpg"), "audio_path": str(audio),
+                               "output_path": str(tmp_path / "take.mp4")})
+
+    assert result.success is False
+    assert "silent" in result.error
+    mock_post.assert_not_called()  # nothing was spent

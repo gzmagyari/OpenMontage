@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import re
 
@@ -36,9 +37,39 @@ async def list_jobs(
     return {"jobs": [job.public(root) for job in jobs]}
 
 
+def _read_journal(path, offset: int, limit: int) -> dict:
+    """The agent's chat stream: journal events [offset, offset+limit) plus the next offset."""
+    events: list[dict] = []
+    total = 0
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for index, line in enumerate(fh):
+                total = index + 1
+                if index < offset or len(events) >= limit:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except ValueError:
+                    events.append({"kind": "malformed"})
+    except OSError:
+        return {"events": [], "next_offset": offset, "total": 0}
+    return {"events": events, "next_offset": offset + len(events), "total": total}
+
+
 @router.get("/jobs/{job_id}")
-async def get_job(request: Request, job_id: str):
-    return _job_or_404(request, job_id).public(base_url(request))
+async def get_job(
+    request: Request,
+    job_id: str,
+    transcript_offset: int = Query(0, ge=0, description="First chat-stream event to return"),
+    transcript_limit: int = Query(200, ge=0, le=1000, description="0 omits the chat stream"),
+):
+    job = _job_or_404(request, job_id)
+    data = job.public(base_url(request))
+    if transcript_limit > 0:
+        journal = request.app.state.store.job_dir(job_id) / "agent" / "journal.jsonl"
+        if journal.is_file():
+            data["transcript"] = _read_journal(journal, transcript_offset, transcript_limit)
+    return data
 
 
 @router.delete("/jobs/{job_id}")

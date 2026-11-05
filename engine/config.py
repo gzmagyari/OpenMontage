@@ -57,6 +57,11 @@ class Settings:
     job_ttl_hours: float
     enable_tool_api: bool
     max_upload_mb: int
+    agent_model: str
+    agent_max_turns: int
+    agent_wall_time_minutes: float
+    agent_max_claude_usd: float | None
+    agent_concurrency: int
 
     @property
     def jobs_dir(self) -> Path:
@@ -85,6 +90,12 @@ def load_settings() -> Settings:
         job_ttl_hours=_float("JOB_TTL_HOURS", 72.0),
         enable_tool_api=_bool("OPENMONTAGE_ENABLE_TOOL_API", False),
         max_upload_mb=_int("MAX_UPLOAD_MB", 100),
+        agent_model=_str("OPENMONTAGE_AGENT_MODEL", "claude-haiku-5-5"),
+        agent_max_turns=_int("AGENT_MAX_TURNS", 500),
+        agent_wall_time_minutes=_float("AGENT_WALL_TIME_MINUTES", 45.0),
+        # The agent-loop (Claude) spend cap per session; generation spend is capped by the brief.
+        agent_max_claude_usd=_float("AGENT_MAX_CLAUDE_USD", 3.0),
+        agent_concurrency=_int("AGENT_CONCURRENCY", 10),
     )
 
 
