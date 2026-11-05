@@ -243,6 +243,17 @@ class AudioMixer(BaseTool):
         """
         return f"[{in_label}]alimiter=limit=1:level=0[{out_label}]"
 
+    def _channels(self, path: str) -> int:
+        """Channel count of the first audio stream (2 if it cannot be probed)."""
+        try:
+            out = self.run_command([
+                "ffprobe", "-v", "error", "-select_streams", "a:0",
+                "-show_entries", "stream=channels", "-of", "csv=p=0", path,
+            ]).stdout.strip().split("\n")[0]
+            return int(out)
+        except Exception:
+            return 2
+
     def _track_filters(self, track: dict[str, Any]) -> list[str]:
         """Build per-track filters on the source timeline before scheduling it.
 
@@ -564,13 +575,22 @@ class AudioMixer(BaseTool):
 
         for i, track in enumerate(all_tracks):
             input_args.extend(["-i", track["path"]])
-            filters = self._track_filters(track)
-
-            if filters:
-                filter_chain = ",".join(filters)
-                filter_parts.append(f"[{i}:a]{filter_chain}[a{i}]")
-            else:
-                filter_parts.append(f"[{i}:a]acopy[a{i}]")
+            # Stereo out, always: a mono first input otherwise made FFmpeg 8
+            # negotiate a mono mix. Mono is duplicated (no -3 dB pan law) so
+            # levels are unchanged; >2 channels are downmixed.
+            channels = self._channels(track["path"])
+            filters = []
+            if channels == 1:
+                filters.append("pan=stereo|c0=c0|c1=c0")
+            elif channels > 2:
+                filters.append("aformat=channel_layouts=stereo")
+            filters += self._track_filters(track)
+            if target is not None:
+                # Every track spans exactly the target. With FFmpeg 8.1 the mix
+                # otherwise ended at the last speech sample (apad on the premix
+                # never ran), dropping late SFX and the music tail.
+                filters.append(f"apad=whole_dur={target},atrim=duration={target},asetpts=PTS-STARTPTS")
+            filter_parts.append(f"[{i}:a]{','.join(filters)}[a{i}]")
 
         # If ducking is enabled and we have both speech and music, apply sidechain
         duck_enabled = ducking.get("enabled", True) if isinstance(ducking, dict) else bool(ducking)

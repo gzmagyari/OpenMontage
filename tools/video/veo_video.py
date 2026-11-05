@@ -215,8 +215,9 @@ class VeoVideo(BaseTool):
         generate_audio = bool(inputs.get("generate_audio", True))
 
         if "fast" in variant:
+            # fal pricing API (2026-11): Veo 3.1 Fast is $0.15/s with audio
             base_per_second = 0.10
-            audio_per_second = 0.20
+            audio_per_second = 0.15
         else:
             if resolution == "4k":
                 base_per_second = 0.40

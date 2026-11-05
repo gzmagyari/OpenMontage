@@ -127,3 +127,21 @@ lint: ensure-venv
 
 clean:
 	$(BASE_PYTHON) -c "import pathlib, shutil; excluded=[pathlib.Path('$(VENV_DIR)'), pathlib.Path('venv')]; skip=lambda p: any(p == root or root in p.parents for root in excluded); roots=[p for p in pathlib.Path('.').rglob('__pycache__') if not skip(p)]; [shutil.rmtree(p) for p in roots]; files=[p for p in pathlib.Path('.').rglob('*.pyc') if not skip(p)]; [p.unlink() for p in files]"
+
+# ---- Video-generator API (docs/API.md) ----
+.PHONY: api api-install api-test docker-build docker-run
+
+api-install: ensure-venv
+	$(PIP) install -r requirements-api.txt
+
+api:
+	$(RUN_PYTHON) -m uvicorn api.main:app --host 0.0.0.0 --port 8080 --workers 1
+
+api-test:
+	$(RUN_PYTHON) -m pytest tests/api tests/engine tests/tools/test_audio_mixer_full_mix_length.py -q
+
+docker-build:
+	docker build -f docker/Dockerfile -t openmontage-api .
+
+docker-run:
+	docker run --rm --init --shm-size=2g -p 8080:8080 --env-file .env -v openmontage-data:/data openmontage-api

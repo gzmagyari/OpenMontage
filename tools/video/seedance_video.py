@@ -213,8 +213,9 @@ class SeedanceVideo(BaseTool):
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         if inputs.get("model_version", "2.0") == "2.5":
+            # fal bills Seedance 2.5 at $0.0214 per 1k video tokens (~$0.4622/s at 720p 9:16)
             return round(
-                0.30
+                0.4622
                 * (
                     5
                     if inputs.get("duration", "5") == "auto"

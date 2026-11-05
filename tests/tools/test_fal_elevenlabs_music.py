@@ -20,8 +20,8 @@ def test_contract_and_rounded_cost(monkeypatch):
 
     monkeypatch.setenv("FAL_KEY", "test-key")
     assert tool.get_status() == ToolStatus.AVAILABLE
-    assert tool.estimate_cost({"duration_seconds": 20}) == 0.80
-    assert tool.estimate_cost({"duration_seconds": 61}) == 1.60
+    assert tool.estimate_cost({"duration_seconds": 20}) == 0.60
+    assert tool.estimate_cost({"duration_seconds": 61}) == 1.20
     assert tool.get_info()["capability"] == "music_generation"
     assert tool.get_info()["provider"] == "fal.ai"
 
@@ -71,7 +71,7 @@ def test_execute_submits_once_and_downloads_audio(tmp_path, monkeypatch):
         )
 
     assert result.success is True
-    assert result.cost_usd == 0.80
+    assert result.cost_usd == 0.60
     assert result.model == "fal-ai/elevenlabs/music"
     assert output_path.read_bytes() == b"fake-mp3"
     assert mock_post.call_count == 1

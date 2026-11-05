@@ -125,11 +125,11 @@ class FalElevenLabsMusic(BaseTool):
         return ToolStatus.AVAILABLE if self._get_api_key() else ToolStatus.UNAVAILABLE
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
-        """fal bills $0.80 per output minute, rounded up to a full minute."""
+        """fal bills $0.60 per output minute, rounded up to a full minute (pricing API, 2026-11)."""
         duration = inputs.get("duration_seconds")
         if duration is None:
             raise ValueError("duration_seconds is required for cost estimation")
-        return round(math.ceil(float(duration) / 60.0) * 0.80, 2)
+        return round(math.ceil(float(duration) / 60.0) * 0.60, 2)
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         api_key = self._get_api_key()

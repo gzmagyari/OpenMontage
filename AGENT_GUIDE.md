@@ -260,6 +260,20 @@ If the folder has tracks, the proposal and asset stages should present them as o
 
 > **Beta pipelines** have not been fully audited. They work, but expect rough edges. Mention this when the user selects one.
 
+## Headless Video API (`api/` + `engine/`)
+
+The repo ships a thin async FastAPI job layer (`api/`, `engine/`) so a SaaS can request videos over
+HTTP: submit a prompt + references, poll `GET /v1/jobs/{id}`, download files. Videos themselves are
+produced by the standard agent-driven pipelines above - the job layer contains no production logic
+(the unattended agent runner is still being built; until then `POST /v1/videos` answers 501). An
+optional internal tool API (`OPENMONTAGE_ENABLE_TOOL_API=1`) runs single registry tools as jobs.
+Reference: [`docs/API.md`](docs/API.md).
+
+- Route work here only when the user asks about the API, the Docker image, or the `engine/` / `api/`
+  code. Interactive video requests in chat still go through the pipelines (Rule Zero).
+- Run locally: `uvicorn api.main:app --port 8080 --workers 1` (one worker per process, by design).
+- Tests: `pytest tests/api tests/engine` (no network).
+
 ## Mandatory Preflight
 
 Do this before any creative work. **Use `provider_menu_summary()` first — it's the human-ready rollup.** The raw `support_envelope()` dump is a firehose (megabytes of JSON on a well-configured machine); pasting it into chat will bury the user.

@@ -107,6 +107,9 @@ class KlingVideo(BaseTool):
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         variant = inputs.get("model_variant", "v3/standard")
         duration = int(inputs.get("duration", "5"))
+        if variant.startswith("v3"):
+            # fal live price for v3 image/text-to-video (api.fal.ai/v1/models/pricing, 2026-11-03)
+            return round(0.14 * duration, 4)
         if "master" in variant:
             return 0.30 * (duration / 5)
         if "pro" in variant:
@@ -139,7 +142,8 @@ class KlingVideo(BaseTool):
         if inputs.get("aspect_ratio"):
             payload["aspect_ratio"] = inputs["aspect_ratio"]
         if operation == "image_to_video" and inputs.get("image_url"):
-            payload["image_url"] = inputs["image_url"]
+            # Kling v3 endpoints take `start_image_url`; v2.1 endpoints take `image_url`.
+            payload["start_image_url" if variant.startswith("v3") else "image_url"] = inputs["image_url"]
 
         headers = {
             "Authorization": f"Key {api_key}",
@@ -175,7 +179,12 @@ class KlingVideo(BaseTool):
 
             # Fetch result
             result_resp = requests.get(response_url, headers=headers, timeout=30)
-            result_resp.raise_for_status()
+            if result_resp.status_code >= 400:
+                # Surface fal's error body (e.g. content_policy_violation details)
+                return ToolResult(
+                    success=False,
+                    error=f"Kling video generation failed ({result_resp.status_code}): {result_resp.text[:800]}",
+                )
             data = result_resp.json()
 
             video_url = data["video"]["url"]

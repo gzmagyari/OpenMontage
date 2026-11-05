@@ -104,3 +104,7 @@ venv/
 
 # Local Wan / diffusers GPU environment
 .venv-wan/
+
+# Video-generator API runtime data (jobs, assets, plans, cache)
+/data/
+.qpanda/

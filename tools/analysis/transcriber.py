@@ -8,6 +8,7 @@ are not available.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -24,6 +25,27 @@ from tools.base_tool import (
     ToolStatus,
     ToolTier,
 )
+
+
+# Loading a Whisper model takes seconds; keep loaded models for the process lifetime.
+# Keyed by the model class too, so test doubles never share an entry.
+_MODEL_CACHE: dict[tuple, Any] = {}
+_MODEL_LOCK = threading.Lock()
+
+
+def _cached_model(model_cls: Any, model_size: str, device: str, compute_type: str) -> Any:
+    key = (model_cls, model_size, device, compute_type)
+    with _MODEL_LOCK:
+        model = _MODEL_CACHE.get(key)
+        if model is None:
+            model = model_cls(model_size, device=device, compute_type=compute_type)
+            _MODEL_CACHE[key] = model
+        return model
+
+
+def _evict_model(model_cls: Any, model_size: str, device: str, compute_type: str) -> None:
+    with _MODEL_LOCK:
+        _MODEL_CACHE.pop((model_cls, model_size, device, compute_type), None)
 
 
 class Transcriber(BaseTool):
@@ -154,11 +176,7 @@ class Transcriber(BaseTool):
             pass
 
         def _transcribe_on(selected_device: str, selected_compute_type: str):
-            model = WhisperModel(
-                model_size,
-                device=selected_device,
-                compute_type=selected_compute_type,
-            )
+            model = _cached_model(WhisperModel, model_size, selected_device, selected_compute_type)
             segments_iter, transcription_info = model.transcribe(
                 str(input_path),
                 language=language,
@@ -199,6 +217,7 @@ class Transcriber(BaseTool):
         try:
             segments, word_timestamps, info = _transcribe_on(device, compute_type)
         except Exception as exc:
+            _evict_model(WhisperModel, model_size, device, compute_type)
             if device == "cpu":
                 raise
             gpu_fallback_reason = f"{type(exc).__name__}: {exc}"
