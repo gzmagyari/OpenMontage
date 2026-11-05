@@ -40,10 +40,31 @@ class VideoOptions(BaseModel):
 class VideoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    prompt: str = Field(..., min_length=3, max_length=4000)
+    prompt: str | None = Field(default=None, min_length=3, max_length=4000,
+                               description="What the video should be. Required unless draft=true")
     references: list[ReferenceIn] = Field(default_factory=list, max_length=12)
     options: VideoOptions = Field(default_factory=lambda: VideoOptions())
+    draft: bool = Field(default=False, description="true creates the job without starting it: "
+                        "edit with PATCH /v1/jobs/{id}, upload with POST /v1/jobs/{id}/files, "
+                        "then POST /v1/jobs/{id}/start")
     idempotency_key: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _prompt_required_unless_draft(self) -> "VideoRequest":
+        if not self.draft and not self.prompt:
+            raise ValueError("'prompt' is required (only draft jobs may omit it until start)")
+        return self
+
+
+class VideoPatch(BaseModel):
+    """Partial update of a draft job. Omitted fields keep their current value;
+    ``references`` replaces the whole list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str | None = Field(default=None, min_length=3, max_length=4000)
+    references: list[ReferenceIn] | None = Field(default=None, max_length=12)
+    options: VideoOptions | None = None
 
 
 class ReviseRequest(BaseModel):

@@ -19,6 +19,7 @@ def new_id(prefix: str) -> str:
 
 
 class JobStatus(str, Enum):
+    DRAFT = "draft"            # created but not started: prompt/references still editable
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -82,6 +83,9 @@ class Job(BaseModel):
     def public(self, files_base_url: str | None = None) -> dict[str, Any]:
         """Polling representation. File references become absolute URLs when a base is given."""
         data = self.model_dump(mode="json", exclude={"request", "idempotency_key"})
+        if self.status == JobStatus.DRAFT:
+            # A draft is still being assembled: the client needs to see what is attached so far.
+            data["request"] = self.request
         data["cost"] = {
             "estimated_usd": self.cost.estimated_usd,
             "spent_usd": round(self.cost.spent_usd, 4),

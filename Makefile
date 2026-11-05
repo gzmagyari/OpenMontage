@@ -131,11 +131,14 @@ clean:
 # ---- Video-generator API (docs/API.md) ----
 .PHONY: api api-install api-test docker-build docker-run
 
+# Host port for the API (uncommon on purpose; 8080 collides with too much local tooling).
+API_PORT ?= 8710
+
 api-install: ensure-venv
 	$(PIP) install -r requirements-api.txt
 
 api:
-	$(RUN_PYTHON) -m uvicorn api.main:app --host 0.0.0.0 --port 8080 --workers 1
+	$(RUN_PYTHON) -m uvicorn api.main:app --host 0.0.0.0 --port $(API_PORT) --workers 1
 
 api-test:
 	$(RUN_PYTHON) -m pytest tests/api tests/engine tests/tools/test_audio_mixer_full_mix_length.py -q
@@ -144,4 +147,4 @@ docker-build:
 	docker build -f docker/Dockerfile -t openmontage-api .
 
 docker-run:
-	docker run --rm --init --shm-size=2g -p 8080:8080 --env-file .env -v openmontage-data:/data openmontage-api
+	docker run --rm --init --shm-size=2g -p $(API_PORT):8080 --env-file .env -v openmontage-data:/data openmontage-api

@@ -92,11 +92,7 @@ class JobManager:
             existing = self.store.find_idempotent(idempotency_key)
             if existing is not None:
                 return existing, False
-        if len(self._running) >= self.settings.max_active_jobs and len(self._queue) >= self.settings.max_queued_jobs:
-            raise QueueFull(
-                f"{len(self._running)} jobs running and {len(self._queue)} queued (limit "
-                f"{self.settings.max_queued_jobs}); retry later"
-            )
+        self._check_admission()
         job = Job(
             id=new_id("job"),
             kind=kind,
@@ -111,11 +107,62 @@ class JobManager:
         self._kick()
         return job, True
 
+    def create_draft(
+        self,
+        kind: JobKind,
+        request: dict[str, Any],
+        idempotency_key: str | None = None,
+        parent_job_id: str | None = None,
+    ) -> tuple[Job, bool]:
+        """Create a job without starting it. Drafts hold no queue slot; admission is checked at start."""
+        if kind not in self.runners:
+            raise NoRunner(f"no runner registered for job kind {kind.value!r}")
+        if idempotency_key:
+            existing = self.store.find_idempotent(idempotency_key)
+            if existing is not None:
+                return existing, False
+        job = Job(
+            id=new_id("job"),
+            kind=kind,
+            status=JobStatus.DRAFT,
+            request=request,
+            idempotency_key=idempotency_key,
+            parent_job_id=parent_job_id,
+            stage="draft",
+            stage_detail="not started; edit it, then POST /v1/jobs/{id}/start",
+        )
+        self.store.add(job)
+        return job, True
+
+    def start_draft(self, job_id: str) -> Job | None:
+        """Move a draft into the queue. Idempotent: a job that already left draft is returned as-is."""
+        job = self.store.get(job_id)
+        if job is None or job.status != JobStatus.DRAFT:
+            return job
+        self._check_admission()
+        job.status = JobStatus.QUEUED
+        job.stage = "queued"
+        job.stage_detail = None
+        self.store.save(job, force=True)
+        self._queue.append(job.id)
+        self._update_positions()
+        self._kick()
+        return job
+
+    def _check_admission(self) -> None:
+        if len(self._running) >= self.settings.max_active_jobs and len(self._queue) >= self.settings.max_queued_jobs:
+            raise QueueFull(
+                f"{len(self._running)} jobs running and {len(self._queue)} queued (limit "
+                f"{self.settings.max_queued_jobs}); retry later"
+            )
+
     def cancel(self, job_id: str) -> Job | None:
         job = self.store.get(job_id)
         if job is None or job.is_terminal:
             return job
-        if job_id in self._queue:
+        if job.status == JobStatus.DRAFT:
+            self._finish(job, JobStatus.CANCELLED, JobError(code="cancelled", message="Draft discarded", retryable=True))
+        elif job_id in self._queue:
             self._queue.remove(job_id)
             self._finish(job, JobStatus.CANCELLED, JobError(code="cancelled", message="Cancelled before start", retryable=True))
             self._update_positions()
@@ -245,9 +292,12 @@ class JobManager:
 
     def cleanup_expired(self) -> int:
         cutoff = utcnow() - timedelta(hours=self.settings.job_ttl_hours)
+        draft_cutoff = utcnow() - timedelta(hours=self.settings.draft_ttl_hours)
         removed = 0
         for job in self.store.all():
-            if job.is_terminal and job.finished_at and job.finished_at < cutoff:
+            expired_terminal = job.is_terminal and job.finished_at and job.finished_at < cutoff
+            abandoned_draft = job.status == JobStatus.DRAFT and job.updated_at < draft_cutoff
+            if expired_terminal or abandoned_draft:
                 shutil.rmtree(self.settings.projects_dir / job.id, ignore_errors=True)
                 self.store.delete(job.id)
                 removed += 1

@@ -55,6 +55,7 @@ class Settings:
     render_concurrency: int
     default_max_budget_usd: float
     job_ttl_hours: float
+    draft_ttl_hours: float
     enable_tool_api: bool
     max_upload_mb: int
     agent_model: str
@@ -88,6 +89,8 @@ def load_settings() -> Settings:
         render_concurrency=_int("RENDER_CONCURRENCY", max(1, cpus // 8)),
         default_max_budget_usd=_float("DEFAULT_MAX_BUDGET_USD", 10.0),
         job_ttl_hours=_float("JOB_TTL_HOURS", 72.0),
+        # Drafts never started are swept after this long without an edit.
+        draft_ttl_hours=_float("DRAFT_TTL_HOURS", 24.0),
         enable_tool_api=_bool("OPENMONTAGE_ENABLE_TOOL_API", False),
         max_upload_mb=_int("MAX_UPLOAD_MB", 100),
         agent_model=_str("OPENMONTAGE_AGENT_MODEL", "claude-haiku-5-5"),

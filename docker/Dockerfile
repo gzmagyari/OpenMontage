@@ -1,7 +1,9 @@
 # OpenMontage video-generator API - CPU-only image.
 #
 #   docker build -f docker/Dockerfile -t openmontage-api .
-#   docker run --init --shm-size=2g -p 8080:8080 --env-file .env -v openmontage-data:/data openmontage-api
+#   docker run --init --shm-size=2g -p 8710:8080 --env-file .env -v openmontage-data:/data openmontage-api
+#
+# The container listens on 8080 internally; map whatever host port suits you (-p HOST:8080).
 #
 # Ships the full video API: FastAPI job layer + one unattended Claude Agent SDK session
 # per video job (the Claude Code runtime is installed below) + Remotion rendering.

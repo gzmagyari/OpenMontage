@@ -14,12 +14,18 @@ OpenMontage's standard agent-driven pipelines (`AGENT_GUIDE.md`, `pipeline_defs/
 
 ```bash
 make api-install          # pip install -r requirements-api.txt
-make api                  # uvicorn api.main:app --port 8080 --workers 1
+make api                  # uvicorn api.main:app --port 8710 --workers 1
 make api-test             # pytest tests/api tests/engine (no network)
 ```
 
+The default port is **8710** (deliberately uncommon; 8080 collides with too much local tooling).
+Override it with `make api API_PORT=9000` / `make docker-run API_PORT=9000`.
+
 One uvicorn worker per container on purpose: jobs run as asyncio tasks in-process and limits are
 process-local. Scale out with more containers; the service answers `429 queue_full` when saturated.
+
+Interactive API docs are served at **`http://localhost:8710/docs`** (Swagger UI, with an
+Authorize button for the bearer token), plus `/redoc` and the raw schema at `/openapi.json`.
 
 Configuration is env-driven (see `.env.example`): `FAL_KEY`, `ANTHROPIC_API_KEY`,
 `OPENMONTAGE_API_TOKEN` (bearer auth), `MAX_ACTIVE_JOBS`, `MAX_QUEUED_JOBS`,
@@ -29,7 +35,10 @@ Configuration is env-driven (see `.env.example`): `FAL_KEY`, `ANTHROPIC_API_KEY`
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/videos` | Prompt + references + options -> `202` with a job. JSON, or multipart with `files` (+ `file_roles`). |
+| `POST /v1/videos` | Prompt + references + options -> `202` with a job. JSON, or multipart with `files` (+ `file_roles`). `"draft": true` creates without starting. |
+| `PATCH /v1/jobs/{id}` | Edit a **draft**: `prompt`, `options`, `references` (list replaced wholesale). 409 once started. |
+| `POST /v1/jobs/{id}/files` | Upload reference files straight onto a **draft** (multipart `files` + `file_roles`); appended to its references. |
+| `POST /v1/jobs/{id}/start` | Validate the assembled draft and queue it (`draft -> queued`). Idempotent once started. |
 | `GET /v1/jobs` | List jobs (filter by `status`, `kind`). |
 | `GET /v1/jobs/{id}` | Poll: status, stage, progress, cost, warnings, error, result, and the agent chat stream (`transcript.events`; page with `?transcript_offset=<next_offset>`, `transcript_limit=0` omits it). |
 | `GET /v1/jobs/{id}/files` / `/files/{name}` | List / download deliverables (the MP4s, `RUN_REPORT.md`, `journal.jsonl`, raw `transcript.jsonl`). |
@@ -39,10 +48,11 @@ Configuration is env-driven (see `.env.example`): `FAL_KEY`, `ANTHROPIC_API_KEY`
 | `GET /healthz`, `GET /readyz`, `GET /v1/capabilities`, `GET /v1/stats` | Health and introspection. |
 | `GET /v1/tools`, `POST /v1/tools/{name}/runs` | Internal: run one registry tool as a job (`OPENMONTAGE_ENABLE_TOOL_API=1`; code-executing tools are deny-listed; file inputs are `asset:<id>` strings). |
 
-Job lifecycle: `queued -> running -> completed | failed | cancelled`, with `stage`, `stage_detail`,
+Job lifecycle: `[draft ->] queued -> running -> completed | failed | cancelled`, with `stage`, `stage_detail`,
 `progress`, a cost ledger (`cost.lines`, `cost.spent_usd`) and a structured `error`
 (`code`, `message`, `retryable`). `Idempotency-Key` (header or body) makes submits safe to retry.
-Interrupted jobs resume after a restart. Finished jobs expire after `JOB_TTL_HOURS`.
+Interrupted jobs resume after a restart. Finished jobs expire after `JOB_TTL_HOURS`; drafts that
+are never started expire `DRAFT_TTL_HOURS` (default 24) after their last edit.
 
 ## Integrating (what a SaaS backend calls)
 
@@ -56,6 +66,30 @@ curl -X POST "$API/v1/videos" -H "Authorization: Bearer $TOKEN" \
   -F files=@mia.jpg -F files=@before.jpg -F files=@after.jpg
 # -> 202 {"id": "job_...", "status": "running", ...}
 ```
+
+**1b. Or build the job up as a draft** - create empty, attach and edit at your own pace, then
+start. Nothing runs (and nothing is spent) until the start call:
+
+```bash
+JOB_ID=$(curl -s -X POST "$API/v1/videos" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"draft": true}' | python -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+# upload reference files straight onto the job (repeatable; appended to its references)
+curl -X POST "$API/v1/jobs/$JOB_ID/files" -H "Authorization: Bearer $TOKEN" \
+  -F 'file_roles=["presenter"]' -F files=@mia.jpg
+
+# set / change the prompt and options any number of times
+curl -X PATCH "$API/v1/jobs/$JOB_ID" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "UGC-style TikTok ad ...", "options": {"duration_seconds": 15, "max_budget_usd": 5}}'
+
+# GET /v1/jobs/{id} shows a draft's current request (prompt, options, references) for review
+
+curl -X POST "$API/v1/jobs/$JOB_ID/start" -H "Authorization: Bearer $TOKEN"   # -> 202, queued
+```
+
+A draft start is validated like a direct submit (missing prompt -> 422 `invalid_request`), and
+retrying the start call on an already-started job is a harmless 200.
 
 **2. Poll** - one call returns status, stage, spend, and the agent's chat stream. Pass the last
 `next_offset` back to receive only new events (`transcript_limit=0` to skip the stream):
