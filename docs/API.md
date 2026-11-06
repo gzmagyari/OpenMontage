@@ -137,7 +137,10 @@ curl -X POST "$API/v1/jobs/$JOB_ID/revise" -H "Authorization: Bearer $TOKEN" \
 
 Costs land in `job["cost"]`: `spent_usd` plus per-item `lines` (the Claude agent spend is exact;
 generation lines come from the agent's own cost log). A 15 s presenter video measures about
-$1.50 all-in and ~9 minutes wall time on Haiku 5.5.
+$1.50 all-in and ~9 minutes wall time on Haiku 5.5. A revision job's ledger holds only what that
+revision spent: it works in the first job's project and keeps logging to the same cost log, so
+the entries the log already held when the revision started are not counted again (the baseline
+is kept per job, so a revision resumed after a restart keeps its own earlier entries).
 
 ## Docker
 

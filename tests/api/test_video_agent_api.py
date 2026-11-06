@@ -271,6 +271,63 @@ async def test_revise_resumes_the_parent_session(agent_client, fake_sdk):
     assert data["result"]["video"]["name"] == "video_rev2.mp4"  # the NEW export wins
 
 
+async def test_revise_ledger_counts_only_the_revisions_own_spend(settings, monkeypatch):
+    """A revision works in the first job's project and keeps logging to the same cost log; its
+    ledger (what a SaaS bills for the revision) must not re-count the parent's paid calls."""
+    import dataclasses
+
+    import httpx
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("FAL_KEY", "test-fal-key")
+    prompts: list[str] = []
+
+    async def fake_query(*, prompt, options=None, **_):
+        prompts.append(prompt)
+        session_id = f"sess-{len(prompts)}"
+        yield SystemMessage(subtype="init", data={
+            "session_id": session_id, "apiKeySource": "ANTHROPIC_API_KEY",
+            "model": options.model, "tools": ["Bash", "Read"]})
+        project = agent_session.Path(_project_dir(prompts[0]))
+        log = project / "artifacts" / "cost_log.json"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        entries = json.loads(log.read_text(encoding="utf-8")) if log.is_file() else []
+        if options.resume:  # the revise prompt: "keep logging costs to .../cost_log.json"
+            entries.append({"item": "fal_elevenlabs_tts new hook line", "usd": 0.01})
+            name = "video_rev2.mp4"
+        else:
+            entries += [{"item": "fal_avatar take1", "usd": 0.88},
+                        {"item": "fal_elevenlabs_tts voiceover", "usd": 0.02}]
+            name = "video.mp4"
+        log.write_text(json.dumps(entries), encoding="utf-8")
+        exports = project / "exports"
+        exports.mkdir(parents=True, exist_ok=True)
+        (exports / name).write_bytes(b"fake-mp4-bytes")
+        (project / "RUN_REPORT.md").write_text("# report", encoding="utf-8")
+        yield AssistantMessage(content=[TextBlock(text="Exported the final video.")], model=options.model)
+        yield ResultMessage(subtype="success", duration_ms=10, duration_api_ms=10, is_error=False,
+                            num_turns=2, session_id=session_id, total_cost_usd=0.05, result="done")
+
+    monkeypatch.setattr(agent_session, "sdk_query", fake_query)
+    app = create_app(settings=dataclasses.replace(settings, agent_wall_time_minutes=0.05))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test",
+                                     headers={"Authorization": "Bearer test-token"}) as http:
+            created = await http.post("/v1/videos", json={"prompt": "original video"})
+            parent = await _wait_terminal(http, created.json()["id"])
+            assert parent["status"] == "completed", parent.get("error")
+            paid = sorted((line["item"], line["usd"]) for line in parent["cost"]["lines"] if line["provider"] != "anthropic")
+            assert paid == [("fal_avatar take1", 0.88), ("fal_elevenlabs_tts voiceover", 0.02)]
+
+            revised = await http.post(f"/v1/jobs/{parent['id']}/revise", json={"feedback": "A new hook line"})
+            child = await _wait_terminal(http, revised.json()["id"])
+            assert child["status"] == "completed", child.get("error")
+            paid = [(line["item"], line["usd"]) for line in child["cost"]["lines"] if line["provider"] != "anthropic"]
+            assert paid == [("fal_elevenlabs_tts new hook line", 0.01)], "the parent's calls are not billed again"
+            assert child["cost"]["spent_usd"] == round(0.01 + 0.05, 4)
+
+
 async def test_ten_parallel_video_jobs(agent_client, fake_sdk):
     fake_sdk.delay = 0.2
     responses = await asyncio.gather(*[

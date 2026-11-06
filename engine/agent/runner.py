@@ -138,6 +138,40 @@ def _read_cost_log(ctx: JobContext, project_dir: Path) -> list[tuple[str, float]
     return entries_out
 
 
+def _beyond_baseline(entries: list[tuple[str, float]], baseline: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    """The cost-log entries a run added on top of `baseline` (compared as a multiset, so an agent
+    that rewrites the file in a different order still matches)."""
+    from collections import Counter
+
+    remaining = Counter(baseline)
+    added = []
+    for entry in entries:
+        if remaining[entry] > 0:
+            remaining[entry] -= 1
+        else:
+            added.append(entry)
+    return added
+
+
+def _cost_log_baseline(ctx: JobContext, project_dir: Path) -> list[tuple[str, float]]:
+    """What the project's cost log already held when this job first started.
+
+    A revision works in the FIRST job's project and keeps logging to the same file, so without
+    this baseline its ledger would re-count everything the earlier runs bought. Persisted per
+    job, so a revision resumed after a restart keeps the entries it logged before the restart."""
+    path = ctx.job_dir / "agent" / "cost_log_baseline.json"
+    if path.is_file():
+        try:
+            return [(str(item), float(usd)) for item, usd in json.loads(path.read_text(encoding="utf-8"))]
+        except (OSError, ValueError, TypeError):
+            ctx.warn("could not read the cost-log baseline; counting the whole project log")
+            return []
+    baseline = _read_cost_log(ctx, project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(baseline), encoding="utf-8")
+    return baseline
+
+
 def _set_line(ctx: JobContext, item: str, usd: float, provider: str, estimated: bool) -> None:
     """Create or update one cost line in place, keeping spent_usd consistent."""
     if usd <= 0:
@@ -162,7 +196,8 @@ def _remove_lines(ctx: JobContext, lines: list) -> None:
 
 
 async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
-                         resume: str | None, started_after: float | None = None) -> dict[str, Any]:
+                         resume: str | None, started_after: float | None = None,
+                         cost_log_baseline: list[tuple[str, float]] | None = None) -> dict[str, Any]:
     settings = ctx.settings
     agent_dir = ctx.job_dir / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -271,8 +306,11 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         meter.llm_exact = float(outcome.total_cost_usd)
         _set_line(ctx, "claude agent", round(outcome.total_cost_usd, 4), "anthropic", estimated=False)
     # The agent's own cost log is the richer record (item names, superseded calls);
-    # it replaces the live lines unless it reports LESS than the observed spend.
+    # it replaces the live lines unless it reports LESS than the observed spend. A revision
+    # counts only what it added to the shared project log.
     log_entries = _read_cost_log(ctx, project_dir)
+    if cost_log_baseline:
+        log_entries = _beyond_baseline(log_entries, cost_log_baseline)
     log_total = round(sum(usd for _, usd in log_entries), 4)
     if log_total >= meter.actuals_total - 0.01:
         _remove_lines(ctx, live_lines)
@@ -372,7 +410,8 @@ async def run_revise(ctx: JobContext) -> dict[str, Any]:
                                           "submit a new video job instead")
     prompt = build_revise_prompt(feedback=ctx.job.request.get("feedback", ""),
                                  project_dir=project_dir, budget_usd=ctx.max_budget_usd)
+    baseline = _cost_log_baseline(ctx, project_dir)
     started = time.time()
     async with ctx.resource("agent", "agent session"):
         return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir,
-                                    resume=session_id, started_after=started)
+                                    resume=session_id, started_after=started, cost_log_baseline=baseline)
