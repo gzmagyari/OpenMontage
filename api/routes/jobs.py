@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 
 from api.deps import base_url, ensure_assets_exist, error, require_token
-from api.schemas import ReviseRequest, VideoPatch, VideoRequest
+from api.schemas import BudgetUpdate, ReviseRequest, VideoPatch, VideoRequest
 from engine.jobs import JobKind, JobStatus
 
 router = APIRouter(prefix="/v1", tags=["jobs"], dependencies=[Depends(require_token)])
@@ -160,6 +160,29 @@ async def start_job(request: Request, job_id: str):
     job = request.app.state.manager.start_draft(job_id)
     return JSONResponse(job.public(base_url(request)), status_code=202,
                         headers={"Location": f"/v1/jobs/{job.id}"})
+
+
+@router.post("/jobs/{job_id}/budget")
+async def set_budget(request: Request, job_id: str, body: BudgetUpdate):
+    """Change a queued or running job's paid-generation budget (USD).
+
+    The running agent is held to it by the server (a PreToolUse hook denies paid
+    calls the remaining budget cannot cover), so lowering the budget to what is
+    already spent makes the run stop buying and export the best cut. Raising it
+    mid-run is allowed too (e.g. after the customer topped up).
+    """
+    job = _job_or_404(request, job_id)
+    if job.status == JobStatus.DRAFT:
+        raise error(status.HTTP_409_CONFLICT, "not_adjustable",
+                    "A draft's budget is edited with PATCH /v1/jobs/{id} (options)")
+    if job.is_terminal:
+        raise error(status.HTTP_409_CONFLICT, "not_adjustable",
+                    f"Job {job_id!r} is {job.status.value}; only queued or running jobs can be re-aimed")
+    options = dict(job.request.get("options") or {})
+    options["max_budget_usd"] = body.max_budget_usd
+    job.request["options"] = options
+    request.app.state.store.save(job, force=True)
+    return job.public(base_url(request))
 
 
 @router.delete("/jobs/{job_id}")

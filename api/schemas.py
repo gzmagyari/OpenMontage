@@ -75,6 +75,16 @@ class ReviseRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=200)
 
 
+class BudgetUpdate(BaseModel):
+    """POST /v1/jobs/{id}/budget: re-aim a queued or running job's paid-generation
+    budget. Lowering it to the current spend makes the enforcement hook deny every
+    further paid call, so the run wraps up and exports what already exists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_budget_usd: float = Field(..., gt=0, le=100)
+
+
 class ToolRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

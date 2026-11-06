@@ -42,6 +42,7 @@ Configuration is env-driven (see `.env.example`): `FAL_KEY`, `ANTHROPIC_API_KEY`
 | `GET /v1/jobs` | List jobs (filter by `status`, `kind`). |
 | `GET /v1/jobs/{id}` | Poll: status, stage, progress, cost, warnings, error, result, and the agent chat stream (`transcript.events`; page with `?transcript_offset=<next_offset>`, `transcript_limit=0` omits it). |
 | `GET /v1/jobs/{id}/files` / `/files/{name}` | List / download deliverables (the MP4s, `RUN_REPORT.md`, `journal.jsonl`, raw `transcript.jsonl`). |
+| `POST /v1/jobs/{id}/budget` | Re-aim a queued or RUNNING job's paid-generation budget (`{"max_budget_usd": N}`). The server holds the agent to it: a PreToolUse hook denies paid calls the remaining budget cannot cover, so lowering it to the current spend makes the run stop buying and export the best cut. 409 `not_adjustable` on drafts (PATCH options instead) and terminal jobs. |
 | `DELETE /v1/jobs/{id}` | Cancel (queued or running). |
 | `POST /v1/jobs/{id}/revise` | Feedback on a completed video -> revision job: the agent session is *resumed* with the feedback, in the same project, reusing every asset that still fits. |
 | `POST /v1/assets` / `GET /v1/assets/{id}[/content]` | Upload once, reference by `asset_id` (de-duplicated by content). |
@@ -50,7 +51,13 @@ Configuration is env-driven (see `.env.example`): `FAL_KEY`, `ANTHROPIC_API_KEY`
 
 Job lifecycle: `[draft ->] queued -> running -> completed | failed | cancelled`, with `stage`, `stage_detail`,
 `progress`, a cost ledger (`cost.lines`, `cost.spent_usd`) and a structured `error`
-(`code`, `message`, `retryable`). `Idempotency-Key` (header or body) makes submits safe to retry.
+(`code`, `message`, `retryable`). The cost ledger is LIVE: while the job runs it carries the
+Claude-loop estimate (metered from per-message token usage, replaced by the exact SDK figure at
+the end) plus every `cost_usd` the paid tools print, parsed server-side from their output - so a
+poll shows real spend as it happens, and a failed, cancelled or timed-out job keeps everything
+spent up to that moment. `options.max_budget_usd` is enforced, not advisory: paid calls past it
+are denied (the agent is told to export what exists), with a watchdog failing the job
+(`budget_exhausted`, not retryable) if spend somehow passes 1.5x the budget. `Idempotency-Key` (header or body) makes submits safe to retry.
 Interrupted jobs resume after a restart. Finished jobs expire after `JOB_TTL_HOURS`; drafts that
 are never started expire `DRAFT_TTL_HOURS` (default 24) after their last edit.
 
