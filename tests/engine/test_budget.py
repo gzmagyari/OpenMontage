@@ -136,6 +136,13 @@ def test_a_selector_and_its_provider_are_one_paid_call(ledger_dir):
     assert [i.item for i in state.items] == ["fake_selector"] and state.spent_usd == 0.40
 
 
+def test_every_tool_that_ran_is_noted_in_order(ledger_dir):
+    assert FreeTool().execute({}).success
+    assert PaidTool().execute({}).success
+    assert SelectorTool().execute({"estimate": 0.10}).success
+    assert state_of(ledger_dir).tools_started == ["fake_free", "fake_paid", "fake_selector"]
+
+
 def test_a_failed_call_costs_what_it_reported(ledger_dir):
     assert PaidTool().execute({"success": False, "cost": 0.0}).success is False
     assert state_of(ledger_dir).spent_usd == 0.0

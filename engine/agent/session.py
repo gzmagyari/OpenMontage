@@ -141,6 +141,7 @@ class AgentSession:
         env_extra: dict[str, str] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_message: Callable[[Any], None] | None = None,
+        on_tool: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.repo_root = repo_root
         self.journal_path = journal_path
@@ -152,6 +153,7 @@ class AgentSession:
         self.env_extra = env_extra
         self.on_event = on_event
         self.on_message = on_message  # every raw SDK message, before journaling (live accounting)
+        self.on_tool = on_tool        # every tool call, with its whole input (the journal clips it)
 
     # -- persistence ---------------------------------------------------------------
     def _write_line(self, path: Path, payload: dict[str, Any]) -> None:
@@ -197,6 +199,8 @@ class AgentSession:
                 elif isinstance(block, ToolUseBlock):
                     self._journal({"kind": "tool", "name": block.name, "id": block.id,
                                    "input": _clip(block.input, 1500)})
+                    if self.on_tool:
+                        self.on_tool(block.name, block.input if isinstance(block.input, dict) else {})
                 elif isinstance(block, ThinkingBlock):
                     pass  # not part of the public chat stream
         elif isinstance(message, UserMessage):

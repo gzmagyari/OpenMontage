@@ -81,6 +81,7 @@ class CostItem:
 class LedgerState:
     items: list[CostItem] = field(default_factory=list)
     denials: list[dict[str, Any]] = field(default_factory=list)
+    tools_started: list[str] = field(default_factory=list)  # every tool that really ran, in order
     recorded: bool = False  # the ledger has any entry at all
 
     @property
@@ -128,6 +129,7 @@ def summarize(entries: list[dict[str, Any]]) -> LedgerState:
         event = entry.get("event")
         if event == "start":
             open_calls[str(entry.get("id"))] = entry
+            state.tools_started.append(str(entry.get("tool")))
         elif event == "finish":
             open_calls.pop(str(entry.get("id")), None)
             cost = _usd(entry.get("cost_usd"))
@@ -159,15 +161,15 @@ def _append(directory: Path, entry: dict[str, Any]) -> None:
 class ToolCall:
     id: str
     details: dict[str, Any]
-    started: bool = False
     denied: str | None = None  # the message for the agent when the budget refuses this call
 
 
 def begin_call(directory: Path, *, tool: str, provider: str | None, inputs: Any,
                estimate_usd: float | None) -> ToolCall:
-    """Allow or deny one tool call. ``estimate_usd`` is None when the tool can't quote it: it then
-    passes until the budget is used up. A free call (estimate 0) always passes, so the wrap-up
-    (mixing, rendering, exporting) can still run on a spent budget."""
+    """Allow or deny one tool call, and note that it started: the job's stage follows what really
+    ran. ``estimate_usd`` is None when the tool can't quote it: it then passes until the budget is
+    used up. A free call (estimate 0) always passes, so the wrap-up (mixing, rendering, exporting)
+    can still run on a spent budget."""
     source = inputs if isinstance(inputs, dict) else {}
     details = {
         "tool": tool,
@@ -185,14 +187,11 @@ def begin_call(directory: Path, *, tool: str, provider: str | None, inputs: Any,
             _append(directory, {"event": "denied", **details, "estimate_usd": estimate_usd,
                                 "spent_usd": spent, "budget_usd": budget})
             return call
-    if estimate_usd is None or estimate_usd > 0:
-        _append(directory, {"event": "start", "id": call.id, **details, "estimate_usd": estimate_usd or 0.0})
-        call.started = True
+    _append(directory, {"event": "start", "id": call.id, **details, "estimate_usd": estimate_usd or 0.0})
     return call
 
 
 def finish_call(directory: Path, call: ToolCall, *, cost_usd: Any, success: Any) -> None:
-    """Record what the call really cost. A free call that never started a line leaves no trace."""
-    if call.started or _usd(cost_usd):
-        _append(directory, {"event": "finish", "id": call.id, **call.details, "cost_usd": _usd(cost_usd),
-                            "success": bool(success)})
+    """Record what the call really cost."""
+    _append(directory, {"event": "finish", "id": call.id, **call.details, "cost_usd": _usd(cost_usd),
+                        "success": bool(success)})

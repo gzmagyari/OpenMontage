@@ -38,35 +38,32 @@ _UNFINISHED_PROMPT = (
     "final MP4 and RUN_REPORT.md exist as briefed."
 )
 
-# Stage heuristics, in production order. Only EXECUTED commands count (a Read or
-# Grep that merely mentions a tool name must not move the stage), and the stage
-# only advances - the agent legitimately revisits earlier tools (a caption
-# re-check during render), but a polling client should see monotonic stages.
+# Stages in production order, by the tool that marks each one. The job's tool ledger
+# says what really ran, so an agent reading a tool's source or a schema that mentions
+# it can't move the stage. The stage only advances - the agent legitimately revisits
+# earlier tools (a caption re-check during render), but a polling client should see
+# monotonic stages.
 _TOOL_STAGES: list[tuple[re.Pattern[str], str, int]] = [
-    (re.compile(r"elevenlabs_tts|piper_tts|azure_tts|\btts\b", re.I), "voiceover", 20),
-    (re.compile(r"fal_avatar|kling_avatar|heygen_avatar|talking_head", re.I), "talking shots", 40),
+    (re.compile(r"tts", re.I), "voiceover", 20),
+    (re.compile(r"avatar|talking_head", re.I), "talking shots", 40),
     (re.compile(r"transcriber|whisper", re.I), "captions", 55),
-    (re.compile(r"audio_mixer|elevenlabs_music|freesound", re.I), "audio mix", 65),
-    (re.compile(r"video_compose|remotion", re.I), "render", 80),
+    (re.compile(r"audio_mixer|music|freesound", re.I), "audio mix", 65),
+    (re.compile(r"video_compose|remotion|hyperframes", re.I), "render", 80),
 ]
-
-_EXEC_TOOLS = {"bash", "powershell", "shell"}
+# The one production step the agent may run outside the tools: Remotion straight from the shell.
+_DIRECT_RENDER = re.compile(r"(?:^|&&|;)\s*(?:timeout\s+\d+\s+)?npx\s+remotion\s+render\b")
 
 
 class StageTracker:
-    """Maps executed tool calls to a monotonic production stage."""
+    """Maps the tools that really ran to a monotonic production stage."""
 
     def __init__(self) -> None:
         self._index = -1
+        self.tools_seen = 0
 
-    def update(self, entry: dict[str, Any]) -> tuple[str, int] | None:
-        if entry.get("kind") != "tool":
-            return None
-        name = str(entry.get("name", "")).lower()
-        # A shell call is judged by its command; any other tool only by its own name.
-        haystack = str(entry.get("input", "")) if name in _EXEC_TOOLS else name
+    def update(self, tool: str) -> tuple[str, int] | None:
         for index, (pattern, stage, progress) in enumerate(_TOOL_STAGES):
-            if index > self._index and pattern.search(haystack):
+            if index > self._index and pattern.search(tool):
                 self._index = index
                 return stage, progress
         return None
@@ -263,6 +260,11 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         if state.items != ledger_items:
             ledger_items = state.items
             _set_generation_lines(ctx, state.items)
+        for tool in state.tools_started[stages.tools_seen:]:
+            mapped = stages.update(tool)
+            if mapped:
+                ctx.set_stage(mapped[0], ctx.job.stage_detail, progress=mapped[1])
+        stages.tools_seen = len(state.tools_started)
         for denial in state.denials[denials_seen:]:
             ctx.set_detail("paid-generation budget reached; finishing with what exists")
             ctx.warn(f"budget enforcement denied a {denial.get('tool')} call at "
@@ -287,12 +289,14 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             text = str(entry.get("text", "")).strip().splitlines()[0][:160]
             if text:
                 ctx.set_detail(text)
-        elif kind == "tool":
-            mapped = stages.update(entry)
-            if mapped:
-                ctx.set_stage(mapped[0], ctx.job.stage_detail, progress=mapped[1])
         elif kind == "ratelimit":
             ctx.set_detail("waiting out a provider rate limit")
+
+    def on_tool(name: str, tool_input: dict[str, Any]) -> None:
+        if name == "Bash" and _DIRECT_RENDER.search(str(tool_input.get("command") or "")):
+            mapped = stages.update("remotion")
+            if mapped:
+                ctx.set_stage(mapped[0], ctx.job.stage_detail, progress=mapped[1])
 
     async def watch() -> None:
         """Keeps the money state current during a long tool call; returns if spend passes the ceiling."""
@@ -321,6 +325,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             env_extra={job_ledger.LEDGER_DIR_ENV: str(agent_dir)},
             on_event=on_event,
             on_message=on_message,
+            on_tool=on_tool,
         )
         run_task = asyncio.create_task(session.run(session_prompt))
         watch_task = asyncio.create_task(watch())

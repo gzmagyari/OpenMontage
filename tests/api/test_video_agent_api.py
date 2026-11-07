@@ -66,11 +66,13 @@ class FakeSDK:
                          ToolUseBlock(id="t1", name="Bash",
                                       input={"command": "python -c 'fal_elevenlabs_tts'"})],
                 model=options.model)
+            record_tool_call(options, "fal_elevenlabs_tts", 0.02, model="eleven-v3", output="/p/vo.mp3")
             yield UserMessage(content=[ToolResultBlock(tool_use_id="t1", content="tts ok", is_error=False)])
             yield AssistantMessage(
                 content=[ToolUseBlock(id="t2", name="Bash",
                                       input={"command": "python -c 'fal_avatar h3max-acting'"})],
                 model=options.model)
+            record_tool_call(options, "fal_avatar", 0.88, model="h3max-acting", output="/p/take1.mp4")
             yield UserMessage(content=[ToolResultBlock(tool_use_id="t2", content="take ok", is_error=False)])
             if fake.delay:
                 await asyncio.sleep(fake.delay)
@@ -81,8 +83,6 @@ class FakeSDK:
                 exports.mkdir(parents=True, exist_ok=True)
                 name = "video_rev2.mp4" if options.resume else "video.mp4"
                 (exports / name).write_bytes(b"fake-mp4-bytes")
-                record_tool_call(options, "fal_avatar", 0.88, model="h3max-acting", output="/p/take1.mp4")
-                record_tool_call(options, "fal_elevenlabs_tts", 0.02, model="eleven-v3", output="/p/vo.mp3")
                 (agent_session.Path(project) / "RUN_REPORT.md").write_text("# report", encoding="utf-8")
                 artifacts = agent_session.Path(project) / "artifacts"
                 artifacts.mkdir(parents=True, exist_ok=True)
@@ -188,22 +188,70 @@ async def test_video_job_end_to_end(agent_client, fake_sdk):
     assert options.env.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS") == "1"
 
 
-def test_stage_tracker_counts_only_executions_and_never_regresses():
+def test_stage_tracker_follows_the_tools_that_ran_and_never_regresses():
     from engine.agent.runner import StageTracker
 
     tracker = StageTracker()
-    # A Read that merely mentions a tool file must not move the stage.
-    assert tracker.update({"kind": "tool", "name": "Read",
-                           "input": '{"file_path": "tools/avatar/fal_avatar.py"}'}) is None
-    assert tracker.update({"kind": "tool", "name": "Bash",
-                           "input": '{"command": "python run_tts.py  # fal_elevenlabs_tts"}'}) == ("voiceover", 20)
-    assert tracker.update({"kind": "tool", "name": "Bash",
-                           "input": '{"command": "python -c \'fal_avatar h3max\'"}'}) == ("talking shots", 40)
+    assert tracker.update("image_gen") is None, "images are part of the agent's preparation"
+    assert tracker.update("fal_elevenlabs_tts") == ("voiceover", 20)
+    assert tracker.update("fal_avatar") == ("talking shots", 40)
     # Revisiting an earlier stage's tool does not move the label backwards.
-    assert tracker.update({"kind": "tool", "name": "Bash",
-                           "input": '{"command": "piper_tts again"}'}) is None
-    assert tracker.update({"kind": "tool", "name": "Bash",
-                           "input": '{"command": "npx remotion render"}'}) == ("render", 80)
+    assert tracker.update("tts_selector") is None
+    assert tracker.update("transcriber") == ("captions", 55)
+    assert tracker.update("fal_elevenlabs_music") == ("audio mix", 65)
+    assert tracker.update("video_compose") == ("render", 80)
+
+
+def test_only_a_real_remotion_run_counts_as_a_direct_render():
+    from engine.agent.runner import _DIRECT_RENDER
+
+    # The shape a real job ran (job_cfcebe356b5cb69e).
+    assert _DIRECT_RENDER.search("cd /app/remotion-composer && P=/data/p && timeout 900 npx remotion render src/index.tsx TalkingHead out.mp4")
+    assert _DIRECT_RENDER.search("npx remotion render src/index.tsx")
+    # Reading about it is not rendering (job_ed7f82b42067d137 reached "render" at 66 s this way).
+    assert not _DIRECT_RENDER.search('grep -n "npx remotion render" tools/video/video_compose.py')
+    assert not _DIRECT_RENDER.search("sed -n 1,200p remotion-composer/SCENE_TYPES.md; ls remotion-composer/src")
+
+
+async def test_reading_about_a_tool_does_not_move_the_stage(settings, monkeypatch):
+    import dataclasses
+
+    import httpx
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    read, ran = asyncio.Event(), asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def fake_query(*, prompt, options=None, **_):
+        yield SystemMessage(subtype="init", data={"session_id": "s", "apiKeySource": "ANTHROPIC_API_KEY",
+                                                  "model": options.model, "tools": ["Bash"]})
+        yield AssistantMessage(content=[ToolUseBlock(id="t1", name="Bash", input={
+            "command": "sed -n 1,50p tools/avatar/fal_avatar.py; cat schemas/remotion.json; grep video_compose x"})],
+            model=options.model)
+        yield UserMessage(content=[ToolResultBlock(tool_use_id="t1", content="source code", is_error=False)])
+        read.set()
+        await proceed.wait()
+        record_tool_call(options, "fal_avatar", 0.88, output="/p/take1.mp4")
+        yield UserMessage(content=[ToolResultBlock(tool_use_id="t2", content="True None 0.88", is_error=False)])
+        ran.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(agent_session, "sdk_query", fake_query)
+    app = create_app(settings=dataclasses.replace(settings, agent_wall_time_minutes=0.2))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test",
+                                     headers={"Authorization": "Bearer test-token"}) as http:
+            job_id = (await http.post("/v1/videos", json={"prompt": "reads a lot first"})).json()["id"]
+            await asyncio.wait_for(read.wait(), 5)
+            data = (await http.get(f"/v1/jobs/{job_id}?transcript_limit=0")).json()
+            assert data["stage"] == "agent" and data["progress"] == 10
+
+            proceed.set()
+            await asyncio.wait_for(ran.wait(), 5)
+            data = (await http.get(f"/v1/jobs/{job_id}?transcript_limit=0")).json()
+            assert data["stage"] == "talking shots" and data["progress"] == 40
+            await http.delete(f"/v1/jobs/{job_id}")
 
 
 async def test_references_reach_the_brief(agent_client, fake_sdk):
