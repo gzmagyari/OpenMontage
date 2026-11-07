@@ -173,6 +173,14 @@ async def test_video_job_end_to_end(agent_client, fake_sdk):
     assert options.env.get("ANTHROPIC_API_KEY") == "test-anthropic-key"
     assert options.env.get("FAL_KEY") == "test-fal-key"
 
+    # One continuous turn: a slow provider call waits in the foreground, nothing moves to the
+    # background, and the tools that end a turn with work still running are not offered.
+    assert options.tools == agent_session.AGENT_TOOLS
+    assert not {"ScheduleWakeup", "Monitor", "CronCreate", "Task", "Workflow"} & set(options.tools)
+    assert options.env.get("BASH_DEFAULT_TIMEOUT_MS") == str(20 * 60 * 1000)
+    assert options.env.get("BASH_MAX_TIMEOUT_MS") == str(30 * 60 * 1000)
+    assert options.env.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS") == "1"
+
 
 def test_stage_tracker_counts_only_executions_and_never_regresses():
     from engine.agent.runner import StageTracker

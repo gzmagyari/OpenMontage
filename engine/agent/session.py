@@ -34,6 +34,11 @@ from claude_agent_sdk import query as sdk_query  # tests monkeypatch engine.agen
 # from scratch and exactly one credential is injected (saasbatch's SCRUB rule).
 _SCRUB = re.compile(r"^(ANTHROPIC|CLAUDE|AI_AGENT|BAGGAGE|OTEL_|SENTRY_)", re.IGNORECASE)
 
+# A job is one continuous turn, on the tools production runs use. An allow-list: wake-ups, cron,
+# workflows and subagents all let the agent end its turn with work still running, and a later
+# CLI's new tools stay out until someone decides otherwise.
+AGENT_TOOLS = ["Bash", "Read", "Write", "Edit", "Skill", "WebFetch", "WebSearch"]
+
 
 class AgentUnavailable(Exception):
     """The agent cannot run in this deployment (missing credential or SDK)."""
@@ -72,6 +77,11 @@ def session_env(repo_root: Path, extra: dict[str, str] | None = None) -> dict[st
     env["CLAUDE_CODE_RETRY_WATCHDOG"] = "1"
     env["CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS"] = str(30 * 60 * 1000)
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+    # A slow provider call waits in the foreground. Past the stock 120 s the CLI would move the
+    # command to the background, and the agent would end its turn to wait for it.
+    env["BASH_DEFAULT_TIMEOUT_MS"] = str(20 * 60 * 1000)
+    env["BASH_MAX_TIMEOUT_MS"] = str(30 * 60 * 1000)
+    env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
     if extra:
         env.update(extra)
     return env
@@ -229,6 +239,7 @@ class AgentSession:
             env=env,
             # Load the repo's CLAUDE.md -> AGENT_GUIDE.md exactly like an interactive run.
             setting_sources=["project"],
+            tools=AGENT_TOOLS,
             system_prompt={"type": "preset", "preset": "claude_code"},
             resume=self.resume,
             hooks=self.hooks or None,
