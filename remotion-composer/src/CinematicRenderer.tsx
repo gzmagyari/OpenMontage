@@ -495,7 +495,8 @@ export const CinematicRenderer: React.FC<CinematicRendererProps> = ({
           durationInFrames={Math.round(scene.durationSeconds * FPS)}
         >
           {scene.kind === "video" ? (
-            <SceneVideo scene={scene} />
+            // The first frame is the hook: the opening scene never fades in from black unless asked to.
+            <SceneVideo scene={scene.startSeconds === 0 && scene.fadeInFrames == null ? { ...scene, fadeInFrames: 0 } : scene} />
           ) : (
             <TitleCard
               text={scene.text}

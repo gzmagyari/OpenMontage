@@ -342,15 +342,16 @@ const Vignette: React.FC = () => (
 // Enhanced Image Scene — spring physics, parallax, variety
 // ---------------------------------------------------------------------------
 
-const ImageScene: React.FC<{ src: string; animation?: string }> = ({
+const ImageScene: React.FC<{ src: string; animation?: string; hardIn?: boolean }> = ({
   src,
   animation,
+  hardIn,
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
 
-  // Smooth spring fade-in
-  const fadeIn = spring({ frame, fps, config: { damping: 18, stiffness: 80 } });
+  // Smooth spring fade-in, unless the scene opens on a cut
+  const fadeIn = hardIn ? 1 : spring({ frame, fps, config: { damping: 18, stiffness: 80 } });
 
   // Fade-out for crossfade effect
   const fadeOutStart = durationInFrames - 8;
@@ -744,8 +745,10 @@ const SceneRenderer: React.FC<{ cut: Cut; theme: ThemeConfig }> = ({ cut, theme 
   // --- Media types (image / video fallback) ---
   const animation = cut.animation || cut.transform?.animation;
 
+  const hardIn = ["cut", "none"].includes((cut.transition_in || "").toLowerCase());
+
   if (cut.source && isImage(cut.source)) {
-    return maybeWrapWithBg(<ImageScene src={cut.source} animation={animation} />);
+    return maybeWrapWithBg(<ImageScene src={cut.source} animation={animation} hardIn={hardIn} />);
   }
 
   if (cut.source && isVideo(cut.source)) {
@@ -764,7 +767,7 @@ const SceneRenderer: React.FC<{ cut: Cut; theme: ThemeConfig }> = ({ cut, theme 
 
   // Final fallback — try as image if source exists, otherwise show text_card
   if (cut.source) {
-    return maybeWrapWithBg(<ImageScene src={cut.source} animation={animation} />);
+    return maybeWrapWithBg(<ImageScene src={cut.source} animation={animation} hardIn={hardIn} />);
   }
 
   // No source, no type — render as text card with cut id as fallback
@@ -847,10 +850,12 @@ export const Explainer: React.FC<ExplainerProps> = (props) => {
       {cuts.map((cut) => {
         const from = Math.round(cut.in_seconds * fps);
         const duration = Math.round((cut.out_seconds - cut.in_seconds) * fps);
+        // The first frame is the hook: the opening cut never fades in from black unless the edit asks for it.
+        const shown = from === 0 && !cut.transition_in ? { ...cut, transition_in: "cut" } : cut;
 
         return (
           <Sequence key={cut.id} from={from} durationInFrames={duration}>
-            <SceneRenderer cut={cut} theme={theme} />
+            <SceneRenderer cut={shown} theme={theme} />
           </Sequence>
         );
       })}
