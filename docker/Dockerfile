@@ -33,8 +33,9 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
  && node --version && npm --version
 
-# The Claude Code runtime the Agent SDK drives (one headless session per video job).
-RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code \
+# The Claude Code runtime (one headless session per video job). The SDK runs the CLI it bundles;
+# this global install is kept at the same version so a shell in the container matches.
+RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.318 \
  && claude --version
 
 WORKDIR /app
