@@ -11,8 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-# The one image model for every generated image (owner's choice, 2026-11-07).
-IMAGE_MODEL = "gpt-image-2.6-sunburst"
+# The one image model for every generated image (owner's choice, 2026-11-07): as real-looking as
+# Sunburst and about three times faster (10 s against 34 s for a high 1024x1536 portrait).
+IMAGE_MODEL = "gpt-image-2.6-flare"
 IMAGE_QUALITY = "high"
 
 
@@ -82,7 +83,9 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
 8. Every generated image (presenter portraits, product shots, scenes, cards) comes from tool
    `openai_image` with `model: "{IMAGE_MODEL}"` and `quality: "{IMAGE_QUALITY}"`, size `1024x1536`
    for vertical frames. Never another image tool or model, FLUX included. Describe a real phone
-   photo: natural skin texture, real light, nothing retouched.
+   photo: natural skin texture, real light, nothing retouched. Show only the client's own brand:
+   no other real brand names, logos or labels, and leave a label blank when the brief doesn't
+   give the brand (the model otherwise invents one, or uses a real one).
 
 ## Quality bar
 

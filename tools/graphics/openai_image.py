@@ -152,7 +152,8 @@ class OpenAIImage(BaseTool):
     # price only ever overstates.
     _TOKEN_RATES = {"text_input": 5.00, "image_input": 8.00, "image_output": 30.00}
     # A token-billed call's typical price per image, for the budget check before the call.
-    # Set above measured use (2.6 Sunburst, high, 1024x1536: 1372 output tokens = $0.042);
+    # Set above measured use (high, 1024x1536: 2.6 Flare 1353 output tokens = $0.041,
+    # 2.6 Sunburst 1372 = $0.042);
     # the bill is the usage OpenAI reports.
     _TOKEN_MODEL_QUOTES = {"low": 0.03, "medium": 0.05, "high": 0.06, "auto": 0.06, "xhigh": 0.10, "max": 0.22}
     _QUOTE_PER_SOURCE_IMAGE = 0.02
