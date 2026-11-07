@@ -333,6 +333,8 @@ async def test_revise_resumes_the_parent_session(agent_client, fake_sdk):
 
     assert len(fake_sdk.calls) == 2
     assert fake_sdk.calls[1]["options"].resume == "sess-1"
+    assert fake_sdk.calls[1]["options"].fork_session is True, "the parent's session stays as it finished"
+    assert fake_sdk.calls[0]["options"].fork_session is False
     assert fake_sdk.calls[1]["options"].env["CLAUDE_CONFIG_DIR"] == fake_sdk.calls[0]["options"].env["CLAUDE_CONFIG_DIR"], \
         "the revision finds the parent's session"
     assert "Make the hook text bigger" in fake_sdk.calls[1]["prompt"]
@@ -399,12 +401,14 @@ async def test_revise_ledger_counts_only_the_revisions_own_spend(settings, monke
 
 
 class RevisionSDK:
-    """Parent and revisions in one project. The session's cost is cumulative across resumes, as
-    the real SDK reports it, and each run's tools record into that job's own ledger."""
+    """Parent and revisions in one project. Sessions behave as the real SDK's do (measured): cost is
+    cumulative across resumes, and a fork gets a new id and includes the session it forked but not
+    other forks of it. Each run's tools record into that job's own ledger."""
 
     def __init__(self):
         self.prompts: list[str] = []
         self.export = True
+        self.session_cost: dict[str, float] = {}
 
     def install(self, monkeypatch):
         fake = self
@@ -412,7 +416,7 @@ class RevisionSDK:
         async def fake_query(*, prompt, options=None, **_):
             fake.prompts.append(prompt)
             run = len(fake.prompts)
-            session_id = f"sess-{run}"
+            session_id = options.resume if options.resume and not options.fork_session else f"sess-{run}"
             yield SystemMessage(subtype="init", data={
                 "session_id": session_id, "apiKeySource": "ANTHROPIC_API_KEY",
                 "model": options.model, "tools": ["Bash", "Read"]})
@@ -427,8 +431,10 @@ class RevisionSDK:
                 record_tool_call(options, "fal_avatar", 0.88, model="h3max-acting", output="/p/take1.mp4")
                 (exports / "video.mp4").write_bytes(b"fake-mp4-bytes")
             yield AssistantMessage(content=[TextBlock(text="Done with this run.")], model=options.model)
+            total = round(fake.session_cost.get(options.resume, 0.0) + (0.03 if options.resume else 0.20), 4)
+            fake.session_cost[session_id] = total
             yield ResultMessage(subtype="success", duration_ms=10, duration_api_ms=10, is_error=False, num_turns=2,
-                                session_id=session_id, total_cost_usd=round(0.20 + 0.03 * (run - 1), 4), result="done")
+                                session_id=session_id, total_cost_usd=total, result="done")
 
         monkeypatch.setattr(agent_session, "sdk_query", fake_query)
         return fake
@@ -490,6 +496,14 @@ async def test_a_revision_with_no_new_export_fails_instead_of_returning_the_pare
             assert not child.get("result")
             assert len(sdk.prompts) == 3, "the parent, the revision and its one resume"
 
+            # The failed attempt spent Claude money, but the member's next revision doesn't pay for it.
+            sdk.export = True
+            again = await http.post(f"/v1/jobs/{parent['id']}/revise", json={"feedback": "A new hook"})
+            retried = await _wait_terminal(http, again.json()["id"])
+            assert retried["status"] == "completed", retried.get("error")
+            items = {line["item"]: line["usd"] for line in retried["cost"]["lines"]}
+            assert items["claude agent"] == 0.03
+
 
 async def test_a_session_that_stops_without_a_video_is_resumed_once(agent_client, fake_sdk):
     fake_sdk.export_from_call = 2
@@ -500,6 +514,7 @@ async def test_a_session_that_stops_without_a_video_is_resumed_once(agent_client
     assert len(fake_sdk.calls) == 2
     resumed = fake_sdk.calls[1]
     assert resumed["options"].resume == "sess-1", "the same session, with everything it already bought"
+    assert resumed["options"].fork_session is False
     assert "no person is present" in resumed["prompt"] and "without paying for it again" in resumed["prompt"]
     assert any("resumed once" in warning for warning in data["warnings"])
     assert data["result"]["video"]["name"] == "video_rev2.mp4"

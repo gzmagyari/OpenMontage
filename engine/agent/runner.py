@@ -31,6 +31,12 @@ _MAX_REFERENCE_MB = 100
 _WATCH_SECONDS = 5.0
 # How far the agent's own cost log may drift from the tools' recorded spend before a warning.
 _COST_LOG_TOLERANCE_USD = 0.05
+# What a session is told when the server comes back in the middle of its run.
+_RESTARTED_PROMPT = (
+    "The server restarted and interrupted your run. Continue the original brief in this session: "
+    "re-check what already exists in the project directory, finish the remaining work, and stop "
+    "once the final MP4 and RUN_REPORT.md exist as briefed."
+)
 # The one follow-up a session gets when it ends without a video.
 _UNFINISHED_PROMPT = (
     "The run stopped before the final MP4 existed. You are unattended: no person is present and nobody "
@@ -245,7 +251,7 @@ def _set_generation_lines(ctx: JobContext, items: list[job_ledger.CostItem]) -> 
 
 
 async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
-                         resume: str | None, exports_baseline: dict[str, int] | None = None,
+                         resume: str | None, fork: bool = False, exports_baseline: dict[str, int] | None = None,
                          cost_log_baseline: list[tuple[str, float]] | None = None,
                          claude_cost_baseline: float = 0.0) -> dict[str, Any]:
     settings = ctx.settings
@@ -336,7 +342,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     session_home = (project_dir / ".agent_session").resolve()
     session_home.mkdir(parents=True, exist_ok=True)
 
-    async def run_session(session_prompt: str, session_resume: str | None) -> RunOutcome:
+    async def run_session(session_prompt: str, session_resume: str | None, session_fork: bool = False) -> RunOutcome:
         session = AgentSession(
             repo_root=_repo_root(),
             journal_path=agent_dir / "journal.jsonl",
@@ -345,6 +351,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             max_turns=getattr(settings, "agent_max_turns", 500),
             max_claude_usd=getattr(settings, "agent_max_claude_usd", None),
             resume=session_resume,
+            fork=session_fork,
             env_extra={job_ledger.LEDGER_DIR_ENV: str(agent_dir), "CLAUDE_CONFIG_DIR": str(session_home)},
             on_event=on_event,
             on_message=on_message,
@@ -391,7 +398,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
 
     sync_budget()
     ctx.set_stage("agent", "the agent is reading the brief", progress=10)
-    outcome = await run_session(prompt, resume)
+    outcome = await run_session(prompt, resume, fork)
     if outcome.succeeded and not exported():
         # Assets it already paid for are still there: the job's deadline and ledger carry on.
         ctx.warn("the agent stopped before exporting a video; its session was resumed once")
@@ -399,7 +406,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
 
     if outcome.total_cost_usd:
         # A resumed session reports Claude's cost since the session began, so a revision
-        # subtracts what its parent already paid for.
+        # subtracts what its parent had paid for when it finished.
         meter.llm_exact = max(0.0, float(outcome.total_cost_usd) - claude_cost_baseline)
         _set_line(ctx, "claude agent", round(meter.llm_exact, 4), "anthropic", estimated=False)
     # What the tools recorded is the bill. The agent's own cost log is a cross-check, and the
@@ -477,10 +484,7 @@ async def run_video(ctx: JobContext) -> dict[str, Any]:
     # A restart mid-run resumes the same session instead of re-briefing (and re-spending).
     session_file = agent_dir / "session_id.txt"
     resume = session_file.read_text(encoding="utf-8").strip() if session_file.is_file() else None
-    prompt = brief if not resume else (
-        "The server restarted and interrupted your run. Continue the original brief in this session: "
-        "re-check what already exists in the project directory, finish the remaining work, and stop "
-        "once the final MP4 and RUN_REPORT.md exist as briefed.")
+    prompt = brief if not resume else _RESTARTED_PROMPT
 
     async with ctx.resource("agent", "agent session"):
         return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=resume)
@@ -496,12 +500,17 @@ async def run_revise(ctx: JobContext) -> dict[str, Any]:
     if not project_dir.is_dir():
         raise JobFailed("parent_expired", "The parent job's project directory was cleaned up; "
                                           "submit a new video job instead")
-    prompt = build_revise_prompt(feedback=ctx.job.request.get("feedback", ""),
-                                 project_dir=project_dir, budget_usd=ctx.max_budget_usd)
+    # A revision forks the parent's session, so an earlier revision that failed is neither billed
+    # to this one nor in its history. A restart mid-run picks up its own fork.
+    agent_dir = ctx.job_dir / "agent"
+    session_file = agent_dir / "session_id.txt"
+    own_session = session_file.read_text(encoding="utf-8").strip() if session_file.is_file() else None
+    prompt = _RESTARTED_PROMPT if own_session else build_revise_prompt(
+        feedback=ctx.job.request.get("feedback", ""), project_dir=project_dir, budget_usd=ctx.max_budget_usd)
     baseline = _cost_log_baseline(ctx, project_dir)
     exports = _exports_baseline(ctx, project_dir)
     parent_claude = float((parent.result.get("agent") or {}).get("cost_usd") or 0.0)
     async with ctx.resource("agent", "agent session"):
-        return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=session_id,
-                                    exports_baseline=exports, cost_log_baseline=baseline,
+        return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=own_session or session_id,
+                                    fork=not own_session, exports_baseline=exports, cost_log_baseline=baseline,
                                     claude_cost_baseline=parent_claude)

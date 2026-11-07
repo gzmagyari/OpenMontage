@@ -138,6 +138,7 @@ class AgentSession:
         max_turns: int,
         max_claude_usd: float | None = None,
         resume: str | None = None,
+        fork: bool = False,
         env_extra: dict[str, str] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_message: Callable[[Any], None] | None = None,
@@ -150,6 +151,7 @@ class AgentSession:
         self.max_turns = max_turns
         self.max_claude_usd = max_claude_usd
         self.resume = resume
+        self.fork = fork              # resume as a new session, leaving the original untouched
         self.env_extra = env_extra
         self.on_event = on_event
         self.on_message = on_message  # every raw SDK message, before journaling (live accounting)
@@ -244,6 +246,7 @@ class AgentSession:
             tools=AGENT_TOOLS,
             system_prompt={"type": "preset", "preset": "claude_code"},
             resume=self.resume,
+            fork_session=self.fork,
             # A tool result carrying a large file (an image read, a long log) overflows the
             # default 1 MiB transport buffer and kills the session; 32 MiB absorbs real runs.
             max_buffer_size=32 * 1024 * 1024,
