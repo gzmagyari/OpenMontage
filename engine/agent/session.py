@@ -141,7 +141,6 @@ class AgentSession:
         env_extra: dict[str, str] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_message: Callable[[Any], None] | None = None,
-        hooks: dict[str, Any] | None = None,
     ) -> None:
         self.repo_root = repo_root
         self.journal_path = journal_path
@@ -153,7 +152,6 @@ class AgentSession:
         self.env_extra = env_extra
         self.on_event = on_event
         self.on_message = on_message  # every raw SDK message, before journaling (live accounting)
-        self.hooks = hooks            # SDK hook config (the budget's PreToolUse enforcement)
 
     # -- persistence ---------------------------------------------------------------
     def _write_line(self, path: Path, payload: dict[str, Any]) -> None:
@@ -242,7 +240,6 @@ class AgentSession:
             tools=AGENT_TOOLS,
             system_prompt={"type": "preset", "preset": "claude_code"},
             resume=self.resume,
-            hooks=self.hooks or None,
             # A tool result carrying a large file (an image read, a long log) overflows the
             # default 1 MiB transport buffer and kills the session; 32 MiB absorbs real runs.
             max_buffer_size=32 * 1024 * 1024,

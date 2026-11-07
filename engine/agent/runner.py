@@ -17,11 +17,18 @@ from pathlib import Path
 from typing import Any
 
 from engine.agent.brief import build_brief, build_revise_prompt
-from engine.agent.budget import BudgetMeter, classify, make_hooks, parse_costs
-from engine.agent.session import AgentAuthError, AgentSession, AgentUnavailable, _tool_result_text
+from engine.agent.budget import BudgetMeter
+from engine.agent.session import AgentAuthError, AgentSession, AgentUnavailable, RunOutcome
 from engine.jobs.context import JobContext, JobFailed
+from engine.jobs.models import CostLine
+from lib import job_ledger
 
 _MAX_REFERENCE_MB = 100
+
+# How often a running job refreshes the budget file and the live ledger.
+_WATCH_SECONDS = 5.0
+# How far the agent's own cost log may drift from the tools' recorded spend before a warning.
+_COST_LOG_TOLERANCE_USD = 0.05
 
 # Stage heuristics, in production order. Only EXECUTED commands count (a Read or
 # Grep that merely mentions a tool name must not move the stage), and the stage
@@ -187,11 +194,13 @@ def _set_line(ctx: JobContext, item: str, usd: float, provider: str, estimated: 
     ctx.add_cost(item, usd, provider=provider, estimated=estimated)
 
 
-def _remove_lines(ctx: JobContext, lines: list) -> None:
-    for line in lines:
-        if line in ctx.job.cost.lines:
-            ctx.job.cost.lines.remove(line)
-            ctx.job.cost.spent_usd = round(ctx.job.cost.spent_usd - line.usd, 4)
+def _set_generation_lines(ctx: JobContext, items: list[job_ledger.CostItem]) -> None:
+    """Replace the job's paid-generation lines with what the tool ledger says now. Rebuilt whole
+    each time, so a restart resuming the run can't count a call twice."""
+    lines = [line for line in ctx.job.cost.lines if line.provider == "anthropic"]
+    lines += [CostLine(item=item.item, usd=item.usd, provider=item.provider, estimated=True) for item in items]
+    ctx.job.cost.lines = lines
+    ctx.job.cost.spent_usd = round(sum(line.usd for line in lines), 4)
     ctx.store.save(ctx.job)
 
 
@@ -199,44 +208,50 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
                          resume: str | None, started_after: float | None = None,
                          cost_log_baseline: list[tuple[str, float]] | None = None) -> dict[str, Any]:
     settings = ctx.settings
-    agent_dir = ctx.job_dir / "agent"
+    agent_dir = (ctx.job_dir / "agent").resolve()
     agent_dir.mkdir(parents=True, exist_ok=True)
     session_file = agent_dir / "session_id.txt"
     stages = StageTracker()
+    model = getattr(settings, "agent_model", "claude-haiku-5-5")
+    wall_minutes = getattr(settings, "agent_wall_time_minutes", 45)
 
-    # Live money state: the budget is read from the job's options on every
-    # decision, so POST /v1/jobs/{id}/budget clamps a running job.
+    # Live money state. Every tool call in the session checks the budget file and appends to the
+    # job's tool ledger; the runner keeps the file current and mirrors the ledger into the job.
     meter = BudgetMeter(lambda: ctx.max_budget_usd)
-    live_lines: list = []           # generation lines added live, replaced by the cost log at the end
-    seen_results: set[str] = set()  # tool_use_ids whose results were already parsed
-    call_kinds: dict[str, str] = {}
+    written_budget: float | None = None
+    ledger_items: list[job_ledger.CostItem] = []
+    denials_seen = 0
 
-    def on_deny(kind: str, floor: float) -> None:
-        ctx.set_detail("paid-generation budget reached; finishing with what exists")
-        ctx.warn(f"budget enforcement denied a {kind} call (floor ${floor:.2f}) at "
-                 f"${meter.generation_spend():.2f} spent of the ${meter.budget():.2f} budget")
+    def sync_budget() -> None:
+        # POST /v1/jobs/{id}/budget changes the job's options; the tools read this file.
+        nonlocal written_budget
+        budget = ctx.max_budget_usd
+        if budget != written_budget:
+            job_ledger.write_budget(agent_dir, budget)
+            written_budget = budget
+
+    def sync_ledger() -> job_ledger.LedgerState:
+        nonlocal ledger_items, denials_seen
+        state = job_ledger.summarize(job_ledger.read_entries(agent_dir))
+        meter.actuals_total = state.spent_usd
+        if state.items != ledger_items:
+            ledger_items = state.items
+            _set_generation_lines(ctx, state.items)
+        for denial in state.denials[denials_seen:]:
+            ctx.set_detail("paid-generation budget reached; finishing with what exists")
+            ctx.warn(f"budget enforcement denied a {denial.get('tool')} call at "
+                     f"${float(denial.get('spent_usd') or 0):.2f} spent of the "
+                     f"${float(denial.get('budget_usd') or 0):.2f} budget")
+        denials_seen = len(state.denials)
+        return state
 
     def on_message(message: Any) -> None:
-        from claude_agent_sdk import AssistantMessage, ToolResultBlock, ToolUseBlock, UserMessage
+        from claude_agent_sdk import AssistantMessage, UserMessage
         if isinstance(message, AssistantMessage):
             meter.add_usage(getattr(message, "usage", None))
-            for block in message.content or []:
-                if isinstance(block, ToolUseBlock):
-                    paid = classify(block.name, block.input if isinstance(block.input, dict) else {})
-                    if paid:
-                        call_kinds[block.id] = paid[0]
             _set_line(ctx, "claude agent", meter.llm_spend(), "anthropic", estimated=True)
         elif isinstance(message, UserMessage):
-            content = message.content if isinstance(message.content, list) else []
-            for block in content:
-                if not isinstance(block, ToolResultBlock) or block.tool_use_id in seen_results:
-                    continue
-                seen_results.add(block.tool_use_id)
-                kind = call_kinds.get(block.tool_use_id, "generation")
-                for usd in parse_costs(_tool_result_text(block.content)):
-                    meter.add_actual(usd)
-                    ctx.add_cost(f"{kind} call (reported live)", usd, provider="fal.ai", estimated=True)
-                    live_lines.append(ctx.job.cost.lines[-1])
+            sync_ledger()
 
     def on_event(entry: dict[str, Any]) -> None:
         kind = entry.get("kind")
@@ -253,72 +268,86 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         elif kind == "ratelimit":
             ctx.set_detail("waiting out a provider rate limit")
 
-    session = AgentSession(
-        repo_root=_repo_root(),
-        journal_path=agent_dir / "journal.jsonl",
-        transcript_path=agent_dir / "transcript.jsonl",
-        model=getattr(settings, "agent_model", "claude-haiku-5-5"),
-        max_turns=getattr(settings, "agent_max_turns", 500),
-        max_claude_usd=getattr(settings, "agent_max_claude_usd", None),
-        resume=resume,
-        on_event=on_event,
-        on_message=on_message,
-        hooks=make_hooks(meter, on_deny=on_deny),
-    )
-    ctx.set_stage("agent", "the agent is reading the brief", progress=10)
-    # The PreToolUse hook denies paid calls past the budget, so this ceiling is a
-    # backstop for classifier gaps; crossing it means the enforcement failed.
-    run_task = asyncio.create_task(session.run(prompt))
-
-    async def _ceiling() -> None:
+    async def watch() -> None:
+        """Keeps the money state current during a long tool call; returns if spend passes the ceiling."""
         while True:
-            await asyncio.sleep(5)
+            await asyncio.sleep(_WATCH_SECONDS)
+            try:
+                sync_budget()
+            except OSError as exc:
+                ctx.warn(f"could not refresh the budget file: {exc}")
+            sync_ledger()
             if meter.generation_spend() > meter.budget() * 1.5 + 0.50:
                 return
 
-    ceiling_task = asyncio.create_task(_ceiling())
-    try:
-        done, _ = await asyncio.wait({run_task, ceiling_task}, return_when=asyncio.FIRST_COMPLETED,
-                                     timeout=getattr(settings, "agent_wall_time_minutes", 45) * 60)
-        if run_task in done:
-            outcome = run_task.result()
-        else:
-            run_task.cancel()
-            await asyncio.gather(run_task, return_exceptions=True)
-            if ceiling_task in done:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wall_minutes * 60
+
+    async def run_session(session_prompt: str, session_resume: str | None) -> RunOutcome:
+        session = AgentSession(
+            repo_root=_repo_root(),
+            journal_path=agent_dir / "journal.jsonl",
+            transcript_path=agent_dir / "transcript.jsonl",
+            model=model,
+            max_turns=getattr(settings, "agent_max_turns", 500),
+            max_claude_usd=getattr(settings, "agent_max_claude_usd", None),
+            resume=session_resume,
+            env_extra={job_ledger.LEDGER_DIR_ENV: str(agent_dir)},
+            on_event=on_event,
+            on_message=on_message,
+        )
+        run_task = asyncio.create_task(session.run(session_prompt))
+        watch_task = asyncio.create_task(watch())
+        try:
+            done, _ = await asyncio.wait({run_task, watch_task}, return_when=asyncio.FIRST_COMPLETED,
+                                         timeout=max(0.0, deadline - loop.time()))
+            if run_task in done:
+                return run_task.result()
+            if watch_task in done:
+                # The tool layer denies paid calls past the budget, so crossing this
+                # means the enforcement was bypassed (say, parallel calls racing it).
                 raise JobFailed("budget_exhausted",
                                 f"Paid generation reached ${meter.generation_spend():.2f}, past 1.5x the "
-                                f"${meter.budget():.2f} budget; the run was stopped. The PreToolUse "
-                                "enforcement should make this unreachable; check the paid-call classifier.",
+                                f"${meter.budget():.2f} budget; the run was stopped.",
                                 retryable=False)
             raise JobFailed("agent_timeout",
-                            f"The agent run exceeded {getattr(settings, 'agent_wall_time_minutes', 45)} minutes "
+                            f"The agent run exceeded {wall_minutes} minutes "
                             "and was stopped; the session can be resumed.", retryable=True)
-    except AgentUnavailable as exc:
-        raise JobFailed("agent_unavailable", str(exc))
-    except AgentAuthError as exc:
-        raise JobFailed("agent_auth", f"Auth self-check failed: {exc}")
-    finally:
-        ceiling_task.cancel()
-        await asyncio.gather(ceiling_task, return_exceptions=True)
+        except AgentUnavailable as exc:
+            raise JobFailed("agent_unavailable", str(exc))
+        except AgentAuthError as exc:
+            raise JobFailed("agent_auth", f"Auth self-check failed: {exc}")
+        finally:
+            # Whatever ended this, a cancelled job included: the agent stops spending with it,
+            # and the job keeps a record of everything spent so far.
+            run_task.cancel()
+            watch_task.cancel()
+            await asyncio.gather(run_task, watch_task, return_exceptions=True)
+            sync_ledger()
+
+    sync_budget()
+    ctx.set_stage("agent", "the agent is reading the brief", progress=10)
+    outcome = await run_session(prompt, resume)
 
     if outcome.total_cost_usd:
         meter.llm_exact = float(outcome.total_cost_usd)
         _set_line(ctx, "claude agent", round(outcome.total_cost_usd, 4), "anthropic", estimated=False)
-    # The agent's own cost log is the richer record (item names, superseded calls);
-    # it replaces the live lines unless it reports LESS than the observed spend. A revision
-    # counts only what it added to the shared project log.
+    # What the tools recorded is the bill. The agent's own cost log is a cross-check, and the
+    # fallback if the ledger stayed empty, so a broken ledger can't bill $0. A revision counts
+    # only what it added to the shared project log.
     log_entries = _read_cost_log(ctx, project_dir)
     if cost_log_baseline:
         log_entries = _beyond_baseline(log_entries, cost_log_baseline)
     log_total = round(sum(usd for _, usd in log_entries), 4)
-    if log_total >= meter.actuals_total - 0.01:
-        _remove_lines(ctx, live_lines)
-        for item, usd in log_entries:
-            ctx.add_cost(item, usd, provider="fal.ai", estimated=True)
-    elif live_lines:
-        ctx.warn(f"the agent's cost log (${log_total:.2f}) reports less than the observed tool "
-                 f"spend (${meter.actuals_total:.2f}); keeping the observed lines")
+    ledger = sync_ledger()
+    if not ledger.recorded:
+        if log_entries:
+            ctx.warn("the tool ledger recorded nothing; billing the agent's own cost log")
+            for item, usd in log_entries:
+                ctx.add_cost(item, usd, provider="fal.ai", estimated=True)
+    elif log_entries and abs(log_total - ledger.spent_usd) > _COST_LOG_TOLERANCE_USD:
+        ctx.warn(f"the agent's cost log (${log_total:.2f}) differs from the tools' recorded spend "
+                 f"(${ledger.spent_usd:.2f}); billing the recorded spend")
 
     if not outcome.succeeded:
         detail = outcome.result_text or outcome.final_text or outcome.subtype or "unknown agent error"
@@ -351,7 +380,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         "files": files,
         "session_id": outcome.session_id,
         "project_dir": str(project_dir),
-        "agent": {"model": session.model, "cost_usd": round(outcome.total_cost_usd, 4),
+        "agent": {"model": model, "cost_usd": round(outcome.total_cost_usd, 4),
                   "turns": outcome.num_turns, "duration_ms": outcome.duration_ms},
     }
 

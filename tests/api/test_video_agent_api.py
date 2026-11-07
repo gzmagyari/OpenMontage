@@ -27,6 +27,7 @@ from claude_agent_sdk import (
 
 import engine.agent.session as agent_session
 from api.main import create_app
+from tests.api.helpers import record_tool_call
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,6 +79,8 @@ class FakeSDK:
                 exports.mkdir(parents=True, exist_ok=True)
                 name = "video_rev2.mp4" if options.resume else "video.mp4"
                 (exports / name).write_bytes(b"fake-mp4-bytes")
+                record_tool_call(options, "fal_avatar", 0.88, model="h3max-acting", output="/p/take1.mp4")
+                record_tool_call(options, "fal_elevenlabs_tts", 0.02, model="eleven-v3", output="/p/vo.mp3")
                 (agent_session.Path(project) / "RUN_REPORT.md").write_text("# report", encoding="utf-8")
                 artifacts = agent_session.Path(project) / "artifacts"
                 artifacts.mkdir(parents=True, exist_ok=True)
@@ -142,11 +145,12 @@ async def test_video_job_end_to_end(agent_client, fake_sdk):
     assert data["result"]["session_id"] == "sess-1"
     assert data["result"]["agent"]["cost_usd"] == 0.21
 
-    # Cost lines: the claude spend plus the agent's own cost log.
+    # Cost lines: the claude spend plus what the tools recorded.
     items = {line["item"]: line["usd"] for line in data["cost"]["lines"]}
-    assert items["claude agent"] == 0.21
-    assert items["fal_avatar take1"] == 0.88
+    assert items == {"claude agent": 0.21, "fal_avatar h3max-acting (take1.mp4)": 0.88,
+                     "fal_elevenlabs_tts eleven-v3 (vo.mp3)": 0.02}
     assert data["cost"]["spent_usd"] == pytest.approx(0.21 + 0.88 + 0.02)
+    assert data["warnings"] == []
 
     # The chat stream is in the poll response and pages correctly.
     transcript = data["transcript"]
@@ -280,8 +284,8 @@ async def test_revise_resumes_the_parent_session(agent_client, fake_sdk):
 
 
 async def test_revise_ledger_counts_only_the_revisions_own_spend(settings, monkeypatch):
-    """A revision works in the first job's project and keeps logging to the same cost log; its
-    ledger (what a SaaS bills for the revision) must not re-count the parent's paid calls."""
+    """A revision works in the first job's project and keeps logging to the same cost log. If the
+    tool ledger is ever empty, that log is the fallback, and it must not re-count the parent's calls."""
     import dataclasses
 
     import httpx
@@ -327,6 +331,7 @@ async def test_revise_ledger_counts_only_the_revisions_own_spend(settings, monke
             assert parent["status"] == "completed", parent.get("error")
             paid = sorted((line["item"], line["usd"]) for line in parent["cost"]["lines"] if line["provider"] != "anthropic")
             assert paid == [("fal_avatar take1", 0.88), ("fal_elevenlabs_tts voiceover", 0.02)]
+            assert any("tool ledger recorded nothing" in warning for warning in parent["warnings"])
 
             revised = await http.post(f"/v1/jobs/{parent['id']}/revise", json={"feedback": "A new hook line"})
             child = await _wait_terminal(http, revised.json()["id"])

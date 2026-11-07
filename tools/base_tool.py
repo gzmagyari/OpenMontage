@@ -242,6 +242,79 @@ def _instrument_execute(fn: Callable) -> Callable:
     return wrapper
 
 
+# Nesting guard for the budget layer (thread-local, like _EXECUTE_DEPTH): a selector
+# delegating to a provider tool is one paid call.
+_BUDGET_DEPTH = _threading.local()
+
+
+def _budget_quote(tool: Any, inputs: Any) -> Optional[float]:
+    """A call's price for the budget check. None when the tool can't quote it; 0 for
+    a resume, whose provider job is already paid for."""
+    if isinstance(inputs, dict) and inputs.get("resume_job"):
+        return 0.0
+    try:
+        return max(0.0, float(tool.estimate_cost(inputs)))
+    except Exception:
+        return None
+
+
+def _budget_execute(fn: Callable) -> Callable:
+    """Hold a tool call to the running job's budget and record what it cost.
+
+    Every paid call of a job passes here however the agent reached the tool, so the
+    budget is enforced at this point (lib/job_ledger.py). A denied call returns a
+    failed ToolResult telling the agent to finish with what exists. Outside a job
+    (OPENMONTAGE_JOB_LEDGER_DIR unset) nothing happens, and a ledger that can't be
+    used never breaks a tool: the job's runner keeps its own cross-check.
+    """
+    if getattr(fn, "_budget_metered", False):
+        return fn
+
+    @functools.wraps(fn)
+    def wrapper(self, inputs: Any, *args: Any, **kwargs: Any):
+        try:
+            from lib import job_ledger
+
+            directory = job_ledger.active_dir()
+        except Exception:
+            return fn(self, inputs, *args, **kwargs)
+        if directory is None or getattr(_BUDGET_DEPTH, "value", 0):
+            return fn(self, inputs, *args, **kwargs)
+
+        try:
+            call = job_ledger.begin_call(
+                directory,
+                tool=getattr(self, "name", "") or self.__class__.__name__,
+                provider=getattr(self, "provider", None),
+                inputs=inputs,
+                estimate_usd=_budget_quote(self, inputs),
+            )
+        except Exception:
+            return fn(self, inputs, *args, **kwargs)
+        if call.denied:
+            return ToolResult(success=False, error=call.denied)
+
+        def finish(cost_usd: Any, success: Any) -> None:
+            try:
+                job_ledger.finish_call(directory, call, cost_usd=cost_usd, success=success)
+            except Exception:
+                pass
+
+        _BUDGET_DEPTH.value = 1
+        try:
+            result = fn(self, inputs, *args, **kwargs)
+        except Exception:
+            finish(0.0, False)
+            raise
+        finally:
+            _BUDGET_DEPTH.value = 0
+        finish(getattr(result, "cost_usd", None), getattr(result, "success", None))
+        return result
+
+    wrapper._budget_metered = True  # type: ignore[attr-defined]
+    return wrapper
+
+
 _FILE_HASH_CHUNK = 1024 * 1024
 
 
@@ -414,9 +487,10 @@ class BaseTool(ABC):
         super().__init_subclass__(**kwargs)
         impl = cls.__dict__.get("execute")
         if impl is not None and not getattr(impl, "__isabstractmethod__", False):
-            # Cache is outermost: a hit skips both the live call and its event
-            # emission. Instrumentation wraps the raw implementation beneath it.
-            cls.execute = _cache_execute(_instrument_execute(impl))
+            # Cache is outermost: a hit is free, so it skips the budget, the live
+            # call and its event emission. Instrumentation wraps the raw
+            # implementation beneath them.
+            cls.execute = _cache_execute(_budget_execute(_instrument_execute(impl)))
 
     # --- Identity (override in subclasses) ---
     name: str = ""

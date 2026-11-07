@@ -166,10 +166,11 @@ async def start_job(request: Request, job_id: str):
 async def set_budget(request: Request, job_id: str, body: BudgetUpdate):
     """Change a queued or running job's paid-generation budget (USD).
 
-    The running agent is held to it by the server (a PreToolUse hook denies paid
-    calls the remaining budget cannot cover), so lowering the budget to what is
-    already spent makes the run stop buying and export the best cut. Raising it
-    mid-run is allowed too (e.g. after the customer topped up).
+    The running agent is held to it by the server (the tool layer denies paid
+    calls the remaining budget cannot cover, within seconds of this call), so
+    lowering the budget to what is already spent makes the run stop buying and
+    export the best cut. Raising it mid-run is allowed too (e.g. after the customer
+    topped up).
     """
     job = _job_or_404(request, job_id)
     if job.status == JobStatus.DRAFT:
