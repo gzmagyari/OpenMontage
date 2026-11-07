@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -224,6 +225,27 @@ def test_the_real_avatar_tool_called_the_way_the_agent_calls_it_is_denied(tmp_pa
     assert state.spent_usd == 0.0
     assert state.denials[0]["tool"] == "fal_avatar" and state.denials[0]["estimate_usd"] == pytest.approx(0.85)
     assert not Path(output).exists()
+
+
+@pytest.mark.skipif(not Path("/proc/self/environ").exists(), reason="needs /proc")
+def test_a_finished_sessions_leftovers_are_stopped(tmp_path):
+    from engine.agent.runner import _stop_leftovers
+
+    directory = tmp_path / "agent"
+    env = {**os.environ, job_ledger.LEDGER_DIR_ENV: str(directory)}
+    leftover = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], env=env)
+    other_job = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 env={**os.environ, job_ledger.LEDGER_DIR_ENV: str(tmp_path / "other")})
+    try:
+        for _ in range(100):      # the child's environment is readable once it has exec'd
+            if _stop_leftovers(directory):
+                break
+            time.sleep(0.02)
+        assert leftover.wait(timeout=5) != 0
+        assert other_job.poll() is None, "another job's processes are left alone"
+    finally:
+        leftover.kill()
+        other_job.kill()
 
 
 def test_budget_file_is_written_whole(tmp_path):

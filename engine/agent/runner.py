@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
+import os
 import re
 import shutil
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -216,6 +218,22 @@ def _set_line(ctx: JobContext, item: str, usd: float, provider: str, estimated: 
     ctx.add_cost(item, usd, provider=provider, estimated=estimated)
 
 
+def _stop_leftovers(agent_dir: Path) -> int:
+    """Stop what a finished session left running. The agent can detach a command with nohup, and
+    then a render keeps its CPUs and a provider call keeps spending after the job has ended. All of
+    a session's processes carry its ledger folder in their environment. Needs /proc (Linux)."""
+    marker = f"{job_ledger.LEDGER_DIR_ENV}={agent_dir}".encode()
+    stopped = 0
+    for proc in Path("/proc").glob("[0-9]*"):
+        try:
+            if marker in (proc / "environ").read_bytes().split(b"\0"):
+                os.kill(int(proc.name), signal.SIGTERM)
+                stopped += 1
+        except (OSError, ValueError):
+            continue
+    return stopped
+
+
 def _set_generation_lines(ctx: JobContext, items: list[job_ledger.CostItem]) -> None:
     """Replace the job's paid-generation lines with what the tool ledger says now. Rebuilt whole
     each time, so a restart resuming the run can't count a call twice."""
@@ -359,6 +377,8 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             run_task.cancel()
             watch_task.cancel()
             await asyncio.gather(run_task, watch_task, return_exceptions=True)
+            if stopped := _stop_leftovers(agent_dir):
+                ctx.log(f"stopped {stopped} processes the session left running")
             sync_ledger()
 
     def exported() -> list[Path]:
