@@ -56,7 +56,8 @@ Claude-loop estimate (metered from per-message token usage, replaced by the exac
 the end) plus what every paid tool call recorded in the job's tool ledger (a call still running
 counts at its estimate, replaced by its real cost when it finishes) - so a poll shows real spend
 as it happens, and a failed, cancelled or timed-out job keeps everything spent up to that moment.
-A revision's ledger holds only what that revision spent, Claude included. `options.max_budget_usd`
+A revision's ledger holds only what that revision spent, Claude included: it forks the parent's
+session, so a revision that failed is neither billed to the next one nor in its history. `options.max_budget_usd`
 is enforced, not advisory: every tool's `execute()` checks it, so paid calls past it are denied
 however the agent invokes the tool (the agent is told to export what exists), with a watchdog failing the job
 (`budget_exhausted`, not retryable) if spend somehow passes 1.5x the budget. A session that ends without a
@@ -165,7 +166,7 @@ make docker-run           # --init --shm-size=2g, /data volume for jobs and uplo
   stages live, mirrors the job's tool ledger (`lib/job_ledger.py`, written from
   `tools/base_tool.py`) into the cost lines, persists the session id for restart-resume, keeps
   the session itself in the project on the data volume so revisions and resumes survive a
-  redeploy, and collects `exports/` + `RUN_REPORT.md` into job files. The SDK version is pinned because it
+  redeploy, stops anything a finished session left running, and collects `exports/` + `RUN_REPORT.md` into job files. The SDK version is pinned because it
   decides how sessions behave: after a rebuild or upgrade run `scripts/agent_session_smoke.py`
   in the container (about $0.01, no paid tools). Agent model/limits: `OPENMONTAGE_AGENT_MODEL`
   (default `claude-haiku-5-5`), `AGENT_MAX_TURNS`, `AGENT_WALL_TIME_MINUTES`,
