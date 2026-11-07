@@ -298,6 +298,8 @@ const PositionedOverlay: React.FC<{ overlay: TalkingHeadOverlay }> = ({
 export interface TalkingHeadProps {
   [key: string]: unknown;
   videoSrc: string;
+  // The render's length. Without it, it ends where the captions and overlays end.
+  durationSeconds?: number;
   captions: WordCaption[];
   overlays?: TalkingHeadOverlay[];
   wordsPerPage?: number;

@@ -367,6 +367,23 @@ class VideoCompose(BaseTool):
         return path.suffix.lower() in VideoCompose._IMAGE_EXTENSIONS
 
     @staticmethod
+    def _local_video_seconds(source: Any, public_dir: Path | None, composer_dir: Path) -> float | None:
+        """The length of a composition's local video, for a render that must match it."""
+        if not source or "://" in str(source):
+            return None
+        for folder in (public_dir, composer_dir / "public"):
+            path = Path(folder) / str(source) if folder else None
+            if path and path.is_file():
+                try:
+                    return float(subprocess.check_output(
+                        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+                        stderr=subprocess.DEVNULL, text=True,
+                    ).strip())
+                except (subprocess.SubprocessError, OSError, ValueError):
+                    return None
+        return None
+
+    @staticmethod
     def _has_audio_stream(path: Path) -> bool:
         """Return True iff ffprobe reports at least one audio stream.
 
@@ -2042,6 +2059,11 @@ class VideoCompose(BaseTool):
                 # Only for the dir we created and will delete; a caller-supplied
                 # public_dir is their contract to populate, so leave it untouched.
                 self._mirror_public_dir(composer_dir / "public", public_dir)
+
+            if composition_id == "TalkingHead" and not props.get("durationSeconds"):
+                seconds = self._local_video_seconds(props.get("videoSrc"), public_dir, composer_dir)
+                if seconds:
+                    props["durationSeconds"] = seconds
 
             # Write the fully adapted/staged props, never the original cut payload.
             with open(props_path, "w", encoding="utf-8") as f:

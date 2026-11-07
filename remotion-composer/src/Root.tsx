@@ -132,6 +132,17 @@ const calculateMetadata: CalculateMetadataFunction<ExplainerProps> = async ({
   return { durationInFrames: Math.ceil((lastEnd + 1) * 30) };
 };
 
+// A TalkingHead render is as long as the job says. The composition's 300 s is only a
+// limit for Studio: rendered as it stands, a 10-second ad produces 5 minutes of video.
+const calculateTalkingHeadMetadata: CalculateMetadataFunction<TalkingHeadProps> = async ({
+  props,
+}) => {
+  const lastCaption = Math.max(0, ...(props.captions || []).map((c) => c.endMs / 1000));
+  const lastOverlay = Math.max(0, ...(props.overlays || []).map((o) => o.out_seconds || 0));
+  const seconds = props.durationSeconds || Math.max(lastCaption, lastOverlay);
+  return seconds > 0 ? { durationInFrames: Math.ceil(seconds * 30) } : {};
+};
+
 export const Root: React.FC = () => {
   return (
     <>
@@ -190,6 +201,7 @@ export const Root: React.FC = () => {
           fontSize: 52,
           highlightColor: "#22D3EE",
         }}
+        calculateMetadata={calculateTalkingHeadMetadata}
       />
       <Composition
         id="TitledVideo"
