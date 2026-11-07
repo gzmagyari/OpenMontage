@@ -163,8 +163,9 @@ make docker-run           # --init --shm-size=2g, /data volume for jobs and uplo
   auth self-check, per-message journal, cost from the result message, and one continuous turn: a
   tool allow-list, long Bash limits, background tasks off), `runner.py` maps tool calls to job
   stages live, mirrors the job's tool ledger (`lib/job_ledger.py`, written from
-  `tools/base_tool.py`) into the cost lines, persists the session id for restart-resume, and
-  collects `exports/` + `RUN_REPORT.md` into job files. The SDK version is pinned because it
+  `tools/base_tool.py`) into the cost lines, persists the session id for restart-resume, keeps
+  the session itself in the project on the data volume so revisions and resumes survive a
+  redeploy, and collects `exports/` + `RUN_REPORT.md` into job files. The SDK version is pinned because it
   decides how sessions behave: after a rebuild or upgrade run `scripts/agent_session_smoke.py`
   in the container (about $0.01, no paid tools). Agent model/limits: `OPENMONTAGE_AGENT_MODEL`
   (default `claude-haiku-5-5`), `AGENT_MAX_TURNS`, `AGENT_WALL_TIME_MINUTES`,

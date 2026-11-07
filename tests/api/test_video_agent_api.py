@@ -187,6 +187,10 @@ async def test_video_job_end_to_end(agent_client, fake_sdk):
     assert options.env.get("BASH_MAX_TIMEOUT_MS") == str(30 * 60 * 1000)
     assert options.env.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS") == "1"
 
+    # The session lives in the project on the data volume, not in the container's home.
+    session_home = agent_session.Path(options.env["CLAUDE_CONFIG_DIR"])
+    assert session_home.is_dir() and session_home.parent.name == job_id
+
 
 def test_stage_tracker_follows_the_tools_that_ran_and_never_regresses():
     from engine.agent.runner import StageTracker
@@ -329,6 +333,8 @@ async def test_revise_resumes_the_parent_session(agent_client, fake_sdk):
 
     assert len(fake_sdk.calls) == 2
     assert fake_sdk.calls[1]["options"].resume == "sess-1"
+    assert fake_sdk.calls[1]["options"].env["CLAUDE_CONFIG_DIR"] == fake_sdk.calls[0]["options"].env["CLAUDE_CONFIG_DIR"], \
+        "the revision finds the parent's session"
     assert "Make the hook text bigger" in fake_sdk.calls[1]["prompt"]
     assert data["result"]["video"]["name"] == "video_rev2.mp4"  # the NEW export wins
 

@@ -312,6 +312,11 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + wall_minutes * 60
+    # The CLI keeps a session's history under its config folder, by default in the container's
+    # home. Here it lives in the project on the data volume: a revision resumes it, a restart
+    # resumes it, a redeploy can't lose it, and it expires with the project.
+    session_home = (project_dir / ".agent_session").resolve()
+    session_home.mkdir(parents=True, exist_ok=True)
 
     async def run_session(session_prompt: str, session_resume: str | None) -> RunOutcome:
         session = AgentSession(
@@ -322,7 +327,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             max_turns=getattr(settings, "agent_max_turns", 500),
             max_claude_usd=getattr(settings, "agent_max_claude_usd", None),
             resume=session_resume,
-            env_extra={job_ledger.LEDGER_DIR_ENV: str(agent_dir)},
+            env_extra={job_ledger.LEDGER_DIR_ENV: str(agent_dir), "CLAUDE_CONFIG_DIR": str(session_home)},
             on_event=on_event,
             on_message=on_message,
             on_tool=on_tool,
