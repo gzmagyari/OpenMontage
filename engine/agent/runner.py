@@ -29,6 +29,14 @@ _MAX_REFERENCE_MB = 100
 _WATCH_SECONDS = 5.0
 # How far the agent's own cost log may drift from the tools' recorded spend before a warning.
 _COST_LOG_TOLERANCE_USD = 0.05
+# The one follow-up a session gets when it ends without a video.
+_UNFINISHED_PROMPT = (
+    "The run stopped before the final MP4 existed. You are unattended: no person is present and nobody "
+    "asked you to stop. Any message saying the user doesn't want something came from the runtime, not "
+    "from a person. Continue the original brief in this session: re-check what exists in the project "
+    "directory, reuse it without paying for it again, finish the remaining work, and stop once the "
+    "final MP4 and RUN_REPORT.md exist as briefed."
+)
 
 # Stage heuristics, in production order. Only EXECUTED commands count (a Read or
 # Grep that merely mentions a tool name must not move the stage), and the stage
@@ -343,9 +351,21 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             await asyncio.gather(run_task, watch_task, return_exceptions=True)
             sync_ledger()
 
+    def exported() -> list[Path]:
+        exports_dir = project_dir / "exports"
+        videos = sorted((p for p in exports_dir.glob("*.mp4") if p.is_file()),
+                        key=lambda p: p.stat().st_mtime) if exports_dir.is_dir() else []
+        if exports_baseline is not None:
+            videos = [p for p in videos if exports_baseline.get(p.name) != p.stat().st_mtime_ns]
+        return videos
+
     sync_budget()
     ctx.set_stage("agent", "the agent is reading the brief", progress=10)
     outcome = await run_session(prompt, resume)
+    if outcome.succeeded and not exported():
+        # Assets it already paid for are still there: the job's deadline and ledger carry on.
+        ctx.warn("the agent stopped before exporting a video; its session was resumed once")
+        outcome = await run_session(_UNFINISHED_PROMPT, outcome.session_id)
 
     if outcome.total_cost_usd:
         # A resumed session reports Claude's cost since the session began, so a revision
@@ -374,15 +394,11 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         raise JobFailed("agent_failed", f"The agent run ended without success "
                                         f"({outcome.subtype}): {str(detail)[:1500]}", retryable=True)
 
-    ctx.set_stage("collecting", "collecting exports", progress=92)
-    exports_dir = project_dir / "exports"
-    videos = sorted((p for p in exports_dir.glob("*.mp4") if p.is_file()),
-                    key=lambda p: p.stat().st_mtime) if exports_dir.is_dir() else []
-    if exports_baseline is not None:
-        videos = [p for p in videos if exports_baseline.get(p.name) != p.stat().st_mtime_ns]
+    videos = exported()
     if not videos:
         raise JobFailed("no_video", "The agent finished without an MP4 under exports/ "
-                                    f"(looked in {exports_dir})", retryable=True)
+                                    f"(looked in {project_dir / 'exports'})", retryable=True)
+    ctx.set_stage("collecting", "collecting exports", progress=92)
 
     files: dict[str, dict[str, Any]] = {}
     for path in videos:

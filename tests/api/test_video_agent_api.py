@@ -47,6 +47,8 @@ class FakeSDK:
         self.subtype = "success"
         self.delay = 0.0
         self.hang = False
+        self.hang_from_call = None
+        self.export_from_call = 1
 
     def install(self, monkeypatch):
         fake = self
@@ -57,7 +59,7 @@ class FakeSDK:
             yield SystemMessage(subtype="init", data={
                 "session_id": session_id, "apiKeySource": fake.api_key_source,
                 "model": options.model, "tools": ["Bash", "Read"]})
-            if fake.hang:
+            if fake.hang or (fake.hang_from_call and len(fake.calls) >= fake.hang_from_call):
                 await asyncio.sleep(3600)
             yield AssistantMessage(
                 content=[TextBlock(text="Reading the brief and planning the production."),
@@ -72,7 +74,7 @@ class FakeSDK:
             yield UserMessage(content=[ToolResultBlock(tool_use_id="t2", content="take ok", is_error=False)])
             if fake.delay:
                 await asyncio.sleep(fake.delay)
-            if fake.subtype == "success":
+            if fake.subtype == "success" and len(fake.calls) >= fake.export_from_call:
                 # The revise prompt names the project dir too; each call uses its own.
                 project = _project_dir(prompt if "goes in:" in prompt else fake.calls[0]["prompt"])
                 exports = agent_session.Path(project) / "exports"
@@ -432,6 +434,47 @@ async def test_a_revision_with_no_new_export_fails_instead_of_returning_the_pare
             child = await _wait_terminal(http, revised.json()["id"])
             assert child["status"] == "failed" and child["error"]["code"] == "no_video"
             assert not child.get("result")
+            assert len(sdk.prompts) == 3, "the parent, the revision and its one resume"
+
+
+async def test_a_session_that_stops_without_a_video_is_resumed_once(agent_client, fake_sdk):
+    fake_sdk.export_from_call = 2
+    response = await agent_client.post("/v1/videos", json={"prompt": "stops early, then finishes"})
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["status"] == "completed", data.get("error")
+
+    assert len(fake_sdk.calls) == 2
+    resumed = fake_sdk.calls[1]
+    assert resumed["options"].resume == "sess-1", "the same session, with everything it already bought"
+    assert "no person is present" in resumed["prompt"] and "without paying for it again" in resumed["prompt"]
+    assert any("resumed once" in warning for warning in data["warnings"])
+    assert data["result"]["video"]["name"] == "video_rev2.mp4"
+
+
+async def test_a_session_that_never_exports_fails_after_the_one_resume(agent_client, fake_sdk):
+    fake_sdk.export_from_call = 99
+    response = await agent_client.post("/v1/videos", json={"prompt": "never exports"})
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["status"] == "failed" and data["error"]["code"] == "no_video"
+    assert data["error"]["retryable"] is True
+    assert len(fake_sdk.calls) == 2, "one resume, never a loop"
+    assert data["stage"] != "collecting", "nothing was there to collect"
+
+
+async def test_a_failed_session_is_not_resumed(agent_client, fake_sdk):
+    fake_sdk.subtype = "error_max_turns"
+    response = await agent_client.post("/v1/videos", json={"prompt": "ran out of turns"})
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["error"]["code"] == "agent_failed" and len(fake_sdk.calls) == 1
+
+
+async def test_the_resume_shares_the_jobs_deadline(agent_client, fake_sdk):
+    fake_sdk.export_from_call = 2
+    fake_sdk.hang_from_call = 2     # agent_wall_time_minutes=0.05 -> 3 s for the whole job
+    response = await agent_client.post("/v1/videos", json={"prompt": "the resume hangs"})
+    data = await _wait_terminal(agent_client, response.json()["id"], timeout=30)
+    assert data["status"] == "failed" and data["error"]["code"] == "agent_timeout"
+    assert len(fake_sdk.calls) == 2
 
 
 async def test_ten_parallel_video_jobs(agent_client, fake_sdk):
