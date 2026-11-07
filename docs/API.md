@@ -42,7 +42,7 @@ Configuration is env-driven (see `.env.example`): `FAL_KEY`, `ANTHROPIC_API_KEY`
 | `GET /v1/jobs` | List jobs (filter by `status`, `kind`). |
 | `GET /v1/jobs/{id}` | Poll: status, stage, progress, cost, warnings, error, result, and the agent chat stream (`transcript.events`; page with `?transcript_offset=<next_offset>`, `transcript_limit=0` omits it). |
 | `GET /v1/jobs/{id}/files` / `/files/{name}` | List / download deliverables (the MP4s, `RUN_REPORT.md`, `journal.jsonl`, raw `transcript.jsonl`). |
-| `POST /v1/jobs/{id}/budget` | Re-aim a queued or RUNNING job's paid-generation budget (`{"max_budget_usd": N}`). The server holds the agent to it: a PreToolUse hook denies paid calls the remaining budget cannot cover, so lowering it to the current spend makes the run stop buying and export the best cut. 409 `not_adjustable` on drafts (PATCH options instead) and terminal jobs. |
+| `POST /v1/jobs/{id}/budget` | Re-aim a queued or RUNNING job's paid-generation budget (`{"max_budget_usd": N}`). The server holds the agent to it: every tool call checks it within seconds, and paid calls the remaining budget cannot cover are denied, so lowering it to the current spend makes the run stop buying and export the best cut. 409 `not_adjustable` on drafts (PATCH options instead) and terminal jobs. |
 | `DELETE /v1/jobs/{id}` | Cancel (queued or running). |
 | `POST /v1/jobs/{id}/revise` | Feedback on a completed video -> revision job: the agent session is *resumed* with the feedback, in the same project, reusing every asset that still fits. |
 | `POST /v1/assets` / `GET /v1/assets/{id}[/content]` | Upload once, reference by `asset_id` (de-duplicated by content). |
@@ -53,11 +53,14 @@ Job lifecycle: `[draft ->] queued -> running -> completed | failed | cancelled`,
 `progress`, a cost ledger (`cost.lines`, `cost.spent_usd`) and a structured `error`
 (`code`, `message`, `retryable`). The cost ledger is LIVE: while the job runs it carries the
 Claude-loop estimate (metered from per-message token usage, replaced by the exact SDK figure at
-the end) plus every `cost_usd` the paid tools print, parsed server-side from their output - so a
-poll shows real spend as it happens, and a failed, cancelled or timed-out job keeps everything
-spent up to that moment. `options.max_budget_usd` is enforced, not advisory: paid calls past it
-are denied (the agent is told to export what exists), with a watchdog failing the job
-(`budget_exhausted`, not retryable) if spend somehow passes 1.5x the budget. `Idempotency-Key` (header or body) makes submits safe to retry.
+the end) plus what every paid tool call recorded in the job's tool ledger (a call still running
+counts at its estimate, replaced by its real cost when it finishes) - so a poll shows real spend
+as it happens, and a failed, cancelled or timed-out job keeps everything spent up to that moment.
+A revision's ledger holds only what that revision spent, Claude included. `options.max_budget_usd`
+is enforced, not advisory: every tool's `execute()` checks it, so paid calls past it are denied
+however the agent invokes the tool (the agent is told to export what exists), with a watchdog failing the job
+(`budget_exhausted`, not retryable) if spend somehow passes 1.5x the budget. A session that ends without a
+video is resumed once before the job fails with `no_video`, and a revision must export a new file. `Idempotency-Key` (header or body) makes submits safe to retry.
 Interrupted jobs resume after a restart. Finished jobs expire after `JOB_TTL_HOURS`; drafts that
 are never started expire `DRAFT_TTL_HOURS` (default 24) after their last edit.
 
@@ -157,9 +160,13 @@ make docker-run           # --init --shm-size=2g, /data volume for jobs and uplo
 - `engine/agent/` - the `VIDEO` / `REVISE` runners: `brief.py` renders the unattended brief
   (prompt + references + the locked production rules + the generation budget with
   degrade-gracefully semantics), `session.py` runs one Claude Agent SDK session (scrubbed env,
-  auth self-check, per-message journal, cost from the result message), `runner.py` maps tool calls
-  to job stages live, persists the session id for restart-resume, and collects `exports/` +
-  `RUN_REPORT.md` into job files. Agent model/limits: `OPENMONTAGE_AGENT_MODEL`
+  auth self-check, per-message journal, cost from the result message, and one continuous turn: a
+  tool allow-list, long Bash limits, background tasks off), `runner.py` maps tool calls to job
+  stages live, mirrors the job's tool ledger (`lib/job_ledger.py`, written from
+  `tools/base_tool.py`) into the cost lines, persists the session id for restart-resume, and
+  collects `exports/` + `RUN_REPORT.md` into job files. The SDK version is pinned because it
+  decides how sessions behave: after a rebuild or upgrade run `scripts/agent_session_smoke.py`
+  in the container (about $0.01, no paid tools). Agent model/limits: `OPENMONTAGE_AGENT_MODEL`
   (default `claude-haiku-5-5`), `AGENT_MAX_TURNS`, `AGENT_WALL_TIME_MINUTES`,
   `AGENT_MAX_CLAUDE_USD`, `AGENT_CONCURRENCY`. The generation budget per job is
   `options.max_budget_usd` (default `DEFAULT_MAX_BUDGET_USD`).
