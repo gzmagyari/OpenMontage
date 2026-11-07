@@ -274,7 +274,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     def on_message(message: Any) -> None:
         from claude_agent_sdk import AssistantMessage, UserMessage
         if isinstance(message, AssistantMessage):
-            meter.add_usage(getattr(message, "usage", None))
+            meter.add_usage(getattr(message, "usage", None), getattr(message, "message_id", None))
             _set_line(ctx, "claude agent", meter.llm_spend(), "anthropic", estimated=True)
         elif isinstance(message, UserMessage):
             sync_ledger()

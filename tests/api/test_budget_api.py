@@ -166,8 +166,8 @@ async def test_live_ledger_is_the_tools_recorded_spend(metered):
     lines = {line["item"]: line for line in live["cost"]["lines"]}
     assert lines["fal_elevenlabs_tts eleven-v3 (vo.mp3)"]["usd"] == 0.02, "tool spend shows while running"
     claude = lines["claude agent"]
-    assert claude["estimated"] is True and claude["usd"] == 0.25  # 0.2M in + 10k out at haiku rates
-    assert live["cost"]["spent_usd"] == 0.27
+    assert claude["estimated"] is True and claude["usd"] == 0.075  # 0.2M in + 10k out at the live rates
+    assert live["cost"]["spent_usd"] == 0.095
 
     # The session runs with the ledger folder set and no SDK hook, so stdin is never needed again.
     assert job_ledger.read_budget(ledger_dir(sdk.options)) == 5
@@ -202,7 +202,7 @@ async def test_a_long_tool_call_shows_while_it_runs(metered):
         ledger_dir(options), tool="fal_avatar", provider="fal.ai",
         inputs={"output_path": "/p/take2.mp4"}, estimate_usd=0.79)
     job_id = (await http.post("/v1/videos", json={"prompt": "a slow render"})).json()["id"]
-    live = await _wait_for(lambda data: data["cost"]["spent_usd"] > 1, "the running call in the ledger", http, job_id)
+    live = await _wait_for(lambda data: data["cost"]["spent_usd"] > 0.8, "the running call in the ledger", http, job_id)
     items = {line["item"]: line["usd"] for line in live["cost"]["lines"]}
     assert items["fal_avatar (take2.mp4) (not finished, estimated)"] == 0.79
     sdk.resume.set()

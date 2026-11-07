@@ -241,7 +241,25 @@ def test_meter_llm_usage_estimate_and_exact():
     meter = BudgetMeter(lambda: 5.0)
     meter.add_usage({"input_tokens": 1_000_000})
     meter.add_usage({"output_tokens": 100_000, "cache_read_input_tokens": 1_000_000})
-    assert meter.llm_spend() == 1.0 + 0.5 + 0.10
+    assert meter.llm_spend() == pytest.approx(0.30 + 0.15 + 0.05)
     meter.add_usage(None)                  # absent usage never crashes the stream
     meter.llm_exact = 0.21
     assert meter.llm_spend() == 0.21
+
+
+def test_meter_counts_one_api_call_once():
+    """The stream repeats a call's usage on every content block it emits."""
+    meter = BudgetMeter(lambda: 5.0)
+    usage = {"cache_read_input_tokens": 1_000_000}
+    for _ in range(3):
+        meter.add_usage(usage, "msg_1")
+    meter.add_usage(usage, "msg_2")
+    assert meter.llm_spend() == 0.10
+
+
+def test_meter_rates_track_the_exact_cost_of_real_jobs():
+    """Token counts as the live stream reports them on real finished jobs, against the SDK's exact cost."""
+    for read, write, exact in [(3_590_600, 134_175, 0.2297), (5_735_635, 153_273, 0.3494)]:
+        meter = BudgetMeter(lambda: 5.0)
+        meter.add_usage({"cache_read_input_tokens": read, "cache_creation_input_tokens": write}, "msg")
+        assert meter.llm_spend() == pytest.approx(exact, rel=0.05)

@@ -15,14 +15,16 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-# Claude token rates in USD per million tokens, for the LIVE estimate only (the
-# exact figure from the SDK result message replaces it at the end). Haiku-class
-# defaults; override per deployment when the model changes.
+# Rates in USD per million tokens for the LIVE estimate only (the exact figure from
+# the SDK result message replaces it at the end). Not list prices: fitted to real
+# Haiku jobs, within 5% of the exact cost on finished runs. A call's output tokens
+# aren't reported until the run ends, so the cache rates also carry that cost.
+# Override per deployment when the model changes.
 _RATES = {
-    "input": float(os.getenv("BUDGET_LLM_INPUT_PER_MTOK", "1.0")),
-    "output": float(os.getenv("BUDGET_LLM_OUTPUT_PER_MTOK", "5.0")),
-    "cache_write": float(os.getenv("BUDGET_LLM_CACHE_WRITE_PER_MTOK", "1.25")),
-    "cache_read": float(os.getenv("BUDGET_LLM_CACHE_READ_PER_MTOK", "0.10")),
+    "input": float(os.getenv("BUDGET_LLM_INPUT_PER_MTOK", "0.30")),
+    "output": float(os.getenv("BUDGET_LLM_OUTPUT_PER_MTOK", "1.50")),
+    "cache_write": float(os.getenv("BUDGET_LLM_CACHE_WRITE_PER_MTOK", "0.35")),
+    "cache_read": float(os.getenv("BUDGET_LLM_CACHE_READ_PER_MTOK", "0.05")),
 }
 
 
@@ -35,6 +37,7 @@ class BudgetMeter:
         self.actuals_total = 0.0
         self.llm_estimate = 0.0
         self.llm_exact: float | None = None
+        self._seen_messages: set[str] = set()
 
     def budget(self) -> float:
         try:
@@ -48,10 +51,13 @@ class BudgetMeter:
     def remaining(self) -> float:
         return self.budget() - self.generation_spend()
 
-    def add_usage(self, usage: dict[str, Any] | None) -> float:
-        """Fold one assistant message's token usage into the live LLM estimate."""
-        if not isinstance(usage, dict):
+    def add_usage(self, usage: dict[str, Any] | None, message_id: str | None = None) -> float:
+        """Fold one API call's token usage into the live LLM estimate. The stream repeats a
+        call's usage on every content block it emits, so a message id counts once."""
+        if not isinstance(usage, dict) or message_id in self._seen_messages:
             return self.llm_spend()
+        if message_id:
+            self._seen_messages.add(message_id)
         tokens = {
             "input": usage.get("input_tokens"),
             "output": usage.get("output_tokens"),
