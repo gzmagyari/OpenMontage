@@ -318,7 +318,8 @@ async def test_revise_ledger_counts_only_the_revisions_own_spend(settings, monke
         (project / "RUN_REPORT.md").write_text("# report", encoding="utf-8")
         yield AssistantMessage(content=[TextBlock(text="Exported the final video.")], model=options.model)
         yield ResultMessage(subtype="success", duration_ms=10, duration_api_ms=10, is_error=False,
-                            num_turns=2, session_id=session_id, total_cost_usd=0.05, result="done")
+                            num_turns=2, session_id=session_id, total_cost_usd=0.05 + 0.03 * (len(prompts) - 1),
+                            result="done")
 
     monkeypatch.setattr(agent_session, "sdk_query", fake_query)
     app = create_app(settings=dataclasses.replace(settings, agent_wall_time_minutes=0.05))
@@ -338,7 +339,99 @@ async def test_revise_ledger_counts_only_the_revisions_own_spend(settings, monke
             assert child["status"] == "completed", child.get("error")
             paid = [(line["item"], line["usd"]) for line in child["cost"]["lines"] if line["provider"] != "anthropic"]
             assert paid == [("fal_elevenlabs_tts new hook line", 0.01)], "the parent's calls are not billed again"
-            assert child["cost"]["spent_usd"] == round(0.01 + 0.05, 4)
+            assert child["cost"]["spent_usd"] == round(0.01 + 0.03, 4)
+
+
+class RevisionSDK:
+    """Parent and revisions in one project. The session's cost is cumulative across resumes, as
+    the real SDK reports it, and each run's tools record into that job's own ledger."""
+
+    def __init__(self):
+        self.prompts: list[str] = []
+        self.export = True
+
+    def install(self, monkeypatch):
+        fake = self
+
+        async def fake_query(*, prompt, options=None, **_):
+            fake.prompts.append(prompt)
+            run = len(fake.prompts)
+            session_id = f"sess-{run}"
+            yield SystemMessage(subtype="init", data={
+                "session_id": session_id, "apiKeySource": "ANTHROPIC_API_KEY",
+                "model": options.model, "tools": ["Bash", "Read"]})
+            project = agent_session.Path(_project_dir(fake.prompts[0]))
+            exports = project / "exports"
+            exports.mkdir(parents=True, exist_ok=True)
+            if options.resume:
+                record_tool_call(options, "fal_elevenlabs_tts", 0.01, model="eleven-v3", output=f"/p/hook{run}.mp3")
+                if fake.export:
+                    (exports / f"video_rev{run}.mp4").write_bytes(b"fake-mp4-bytes")
+            else:
+                record_tool_call(options, "fal_avatar", 0.88, model="h3max-acting", output="/p/take1.mp4")
+                (exports / "video.mp4").write_bytes(b"fake-mp4-bytes")
+            yield AssistantMessage(content=[TextBlock(text="Done with this run.")], model=options.model)
+            yield ResultMessage(subtype="success", duration_ms=10, duration_api_ms=10, is_error=False, num_turns=2,
+                                session_id=session_id, total_cost_usd=round(0.20 + 0.03 * (run - 1), 4), result="done")
+
+        monkeypatch.setattr(agent_session, "sdk_query", fake_query)
+        return fake
+
+
+async def test_revisions_pay_only_their_own_claude_and_tool_spend(settings, monkeypatch):
+    import dataclasses
+
+    import httpx
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    RevisionSDK().install(monkeypatch)
+    app = create_app(settings=dataclasses.replace(settings, agent_wall_time_minutes=0.05))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test",
+                                     headers={"Authorization": "Bearer test-token"}) as http:
+            created = await http.post("/v1/videos", json={"prompt": "original video"})
+            parent = await _wait_terminal(http, created.json()["id"])
+            assert parent["status"] == "completed", parent.get("error")
+            assert parent["cost"]["spent_usd"] == round(0.20 + 0.88, 4)
+
+            revised = await http.post(f"/v1/jobs/{parent['id']}/revise", json={"feedback": "A new hook"})
+            first = await _wait_terminal(http, revised.json()["id"])
+            assert first["status"] == "completed", first.get("error")
+            items = {line["item"]: line["usd"] for line in first["cost"]["lines"]}
+            assert items == {"claude agent": 0.03, "fal_elevenlabs_tts eleven-v3 (hook2.mp3)": 0.01}
+            assert first["result"]["agent"]["cost_usd"] == 0.23, "the session total stays cumulative for the next link"
+
+            # A revision of the revision subtracts everything the chain already paid for.
+            again = await http.post(f"/v1/jobs/{first['id']}/revise", json={"feedback": "Shorter"})
+            second = await _wait_terminal(http, again.json()["id"])
+            assert second["status"] == "completed", second.get("error")
+            items = {line["item"]: line["usd"] for line in second["cost"]["lines"]}
+            assert items == {"claude agent": 0.03, "fal_elevenlabs_tts eleven-v3 (hook3.mp3)": 0.01}
+            assert second["result"]["video"]["name"] == "video_rev3.mp4"
+
+
+async def test_a_revision_with_no_new_export_fails_instead_of_returning_the_parents_video(settings, monkeypatch):
+    import dataclasses
+
+    import httpx
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    sdk = RevisionSDK().install(monkeypatch)
+    app = create_app(settings=dataclasses.replace(settings, agent_wall_time_minutes=0.05))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test",
+                                     headers={"Authorization": "Bearer test-token"}) as http:
+            created = await http.post("/v1/videos", json={"prompt": "original video"})
+            parent = await _wait_terminal(http, created.json()["id"])
+            assert parent["status"] == "completed", parent.get("error")
+
+            sdk.export = False
+            revised = await http.post(f"/v1/jobs/{parent['id']}/revise", json={"feedback": "A new hook"})
+            child = await _wait_terminal(http, revised.json()["id"])
+            assert child["status"] == "failed" and child["error"]["code"] == "no_video"
+            assert not child.get("result")
 
 
 async def test_ten_parallel_video_jobs(agent_client, fake_sdk):

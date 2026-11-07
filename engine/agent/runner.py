@@ -179,6 +179,23 @@ def _cost_log_baseline(ctx: JobContext, project_dir: Path) -> list[tuple[str, fl
     return baseline
 
 
+def _exports_baseline(ctx: JobContext, project_dir: Path) -> dict[str, int]:
+    """The MP4s the project already held when this job first started (name to mtime).
+
+    A revision works in the FIRST job's project, so the earlier exports are still in the folder.
+    Persisted per job, so a revision resumed after a restart still counts what it exported itself."""
+    path = ctx.job_dir / "agent" / "exports_baseline.json"
+    if path.is_file():
+        try:
+            return {str(name): int(mtime) for name, mtime in json.loads(path.read_text(encoding="utf-8")).items()}
+        except (OSError, ValueError, TypeError, AttributeError):
+            ctx.warn("could not read the exports baseline; counting only new file names")
+    baseline = {p.name: p.stat().st_mtime_ns for p in (project_dir / "exports").glob("*.mp4") if p.is_file()}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(baseline), encoding="utf-8")
+    return baseline
+
+
 def _set_line(ctx: JobContext, item: str, usd: float, provider: str, estimated: bool) -> None:
     """Create or update one cost line in place, keeping spent_usd consistent."""
     if usd <= 0:
@@ -205,8 +222,9 @@ def _set_generation_lines(ctx: JobContext, items: list[job_ledger.CostItem]) -> 
 
 
 async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
-                         resume: str | None, started_after: float | None = None,
-                         cost_log_baseline: list[tuple[str, float]] | None = None) -> dict[str, Any]:
+                         resume: str | None, exports_baseline: dict[str, int] | None = None,
+                         cost_log_baseline: list[tuple[str, float]] | None = None,
+                         claude_cost_baseline: float = 0.0) -> dict[str, Any]:
     settings = ctx.settings
     agent_dir = (ctx.job_dir / "agent").resolve()
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -330,8 +348,10 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     outcome = await run_session(prompt, resume)
 
     if outcome.total_cost_usd:
-        meter.llm_exact = float(outcome.total_cost_usd)
-        _set_line(ctx, "claude agent", round(outcome.total_cost_usd, 4), "anthropic", estimated=False)
+        # A resumed session reports Claude's cost since the session began, so a revision
+        # subtracts what its parent already paid for.
+        meter.llm_exact = max(0.0, float(outcome.total_cost_usd) - claude_cost_baseline)
+        _set_line(ctx, "claude agent", round(meter.llm_exact, 4), "anthropic", estimated=False)
     # What the tools recorded is the bill. The agent's own cost log is a cross-check, and the
     # fallback if the ledger stayed empty, so a broken ledger can't bill $0. A revision counts
     # only what it added to the shared project log.
@@ -358,9 +378,8 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     exports_dir = project_dir / "exports"
     videos = sorted((p for p in exports_dir.glob("*.mp4") if p.is_file()),
                     key=lambda p: p.stat().st_mtime) if exports_dir.is_dir() else []
-    if started_after is not None:
-        fresh = [p for p in videos if p.stat().st_mtime >= started_after]
-        videos = fresh or videos
+    if exports_baseline is not None:
+        videos = [p for p in videos if exports_baseline.get(p.name) != p.stat().st_mtime_ns]
     if not videos:
         raise JobFailed("no_video", "The agent finished without an MP4 under exports/ "
                                     f"(looked in {exports_dir})", retryable=True)
@@ -387,8 +406,6 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
 
 # -- the registered runners ---------------------------------------------------------
 async def run_video(ctx: JobContext) -> dict[str, Any]:
-    import time
-
     options = ctx.job.request.get("options") or {}
     project_dir = ctx.project_dir
     refs_dir = project_dir / "refs"
@@ -419,15 +436,11 @@ async def run_video(ctx: JobContext) -> dict[str, Any]:
         "re-check what already exists in the project directory, finish the remaining work, and stop "
         "once the final MP4 and RUN_REPORT.md exist as briefed.")
 
-    started = time.time()
     async with ctx.resource("agent", "agent session"):
-        return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir,
-                                    resume=resume, started_after=None if resume else started)
+        return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=resume)
 
 
 async def run_revise(ctx: JobContext) -> dict[str, Any]:
-    import time
-
     parent_id = ctx.job.request.get("parent_job_id")
     parent = ctx.services.store.get(parent_id) if (ctx.services and ctx.services.store) else None
     if parent is None or not parent.result:
@@ -440,7 +453,9 @@ async def run_revise(ctx: JobContext) -> dict[str, Any]:
     prompt = build_revise_prompt(feedback=ctx.job.request.get("feedback", ""),
                                  project_dir=project_dir, budget_usd=ctx.max_budget_usd)
     baseline = _cost_log_baseline(ctx, project_dir)
-    started = time.time()
+    exports = _exports_baseline(ctx, project_dir)
+    parent_claude = float((parent.result.get("agent") or {}).get("cost_usd") or 0.0)
     async with ctx.resource("agent", "agent session"):
-        return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir,
-                                    resume=session_id, started_after=started, cost_log_baseline=baseline)
+        return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=session_id,
+                                    exports_baseline=exports, cost_log_baseline=baseline,
+                                    claude_cost_baseline=parent_claude)
