@@ -11,6 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+# The one image model for every generated image (owner's choice, 2026-11-07).
+IMAGE_MODEL = "gpt-image-2.6-sunburst"
+IMAGE_QUALITY = "high"
+
 
 def _references_section(references: list[dict[str, Any]]) -> str:
     if not references:
@@ -75,6 +79,10 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
 {caption_rule}
 {music_rule}
 7. Render with Remotion and deliver BT.709 limited range, H.264, 1080x1920.
+8. Every generated image (presenter portraits, product shots, scenes, cards) comes from tool
+   `openai_image` with `model: "{IMAGE_MODEL}"` and `quality: "{IMAGE_QUALITY}"`, size `1024x1536`
+   for vertical frames. Never another image tool or model, FLUX included. Describe a real phone
+   photo: natural skin texture, real light, nothing retouched.
 
 ## Quality bar
 
@@ -110,7 +118,8 @@ running unattended: never pause for approval, decide and record. Their feedback:
 
 Apply the feedback with the smallest change that honors it: reuse every asset that is still right,
 regenerate only what the feedback touches, and keep every locked production decision from the
-original brief (one voice, fal_avatar h3max-acting for on-camera speech, review gates). Additional
+original brief (one voice, fal_avatar h3max-acting for on-camera speech, {IMAGE_MODEL} at
+{IMAGE_QUALITY} quality for any new image, review gates). Additional
 paid-generation budget for this revision: ${budget_usd:.2f}; keep logging costs to
 {project}/artifacts/cost_log.json.
 

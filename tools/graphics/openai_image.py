@@ -69,6 +69,8 @@ class OpenAIImage(BaseTool):
                     "gpt-image-2",
                     "gpt-image-2.5-flare",
                     "gpt-image-2.5-sunburst",
+                    "gpt-image-2.6-flare",
+                    "gpt-image-2.6-sunburst",
                 ],
                 "default": "gpt-image-2",
             },
@@ -145,13 +147,35 @@ class OpenAIImage(BaseTool):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
+    # GPT Image 2.5 and 2.6 bill by token, Sunburst and Flare alike (USD per 1M tokens,
+    # OpenAI API pricing, 2026-11-07). Cached input is billed lower; counting it at full
+    # price only ever overstates.
+    _TOKEN_RATES = {"text_input": 5.00, "image_input": 8.00, "image_output": 30.00}
+    # A token-billed call's typical price per image, for the budget check before the call.
+    # Set above measured use (2.6 Sunburst, high, 1024x1536: 1372 output tokens = $0.042);
+    # the bill is the usage OpenAI reports.
+    _TOKEN_MODEL_QUOTES = {"low": 0.03, "medium": 0.05, "high": 0.06, "auto": 0.06, "xhigh": 0.10, "max": 0.22}
+    _QUOTE_PER_SOURCE_IMAGE = 0.02
+
+    @classmethod
+    def _usage_cost(cls, usage: Any) -> float | None:
+        """What a token-billed call cost, from the usage OpenAI returned."""
+        if not isinstance(usage, dict) or "output_tokens" not in usage:
+            return None
+        details = usage.get("input_tokens_details") or {}
+        text_in = details.get("text_tokens", 0 if details else usage.get("input_tokens", 0))
+        image_in = details.get("image_tokens", 0)
+        rates = cls._TOKEN_RATES
+        return round((text_in * rates["text_input"] + image_in * rates["image_input"]
+                      + usage["output_tokens"] * rates["image_output"]) / 1_000_000, 6)
+
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         # gpt-image-2 per-image pricing at 1024x1024 (non-square sizes run
         # slightly cheaper): https://developers.openai.com/api/docs/guides/image-generation
         if inputs.get("model", "gpt-image-2") != "gpt-image-2":
-            raise PriceQuoteRequired(
-                "GPT Image 2.5 uses token pricing; obtain a quote for the chosen size and quality"
-            )
+            sources = len(inputs.get("image_paths") or []) + (1 if inputs.get("image_path") else 0)
+            per_image = self._TOKEN_MODEL_QUOTES.get(inputs.get("quality", "high"), 0.06)
+            return round(per_image * inputs.get("n", 1) + self._QUOTE_PER_SOURCE_IMAGE * sources, 4)
         quality = inputs.get("quality", "high")
         n = inputs.get("n", 1)
         cost_map = {"low": 0.006, "medium": 0.053, "high": 0.211, "auto": 0.053}
@@ -248,6 +272,15 @@ class OpenAIImage(BaseTool):
                 success=False, error=f"OpenAI image generation failed: {e}"
             )
 
+        usage = (response.usage.model_dump() if getattr(response, "usage", None)
+                 and hasattr(response.usage, "model_dump") else None)
+        if model == "gpt-image-2":
+            cost, cost_status = self.estimate_cost(inputs), "estimated"
+        else:
+            cost = self._usage_cost(usage)
+            cost_status = "usage_priced" if cost is not None else "usage_reported_unpriced"
+            if cost is None:
+                cost = self.estimate_cost(inputs)  # never bill a paid call as free
         return ToolResult(
             success=True,
             data={
@@ -258,16 +291,11 @@ class OpenAIImage(BaseTool):
                 "outputs": outputs,
                 "images_generated": len(outputs),
                 "operation": mode,
-                "usage": response.usage.model_dump()
-                if getattr(response, "usage", None)
-                and hasattr(response.usage, "model_dump")
-                else None,
-                "cost_status": "estimated"
-                if model == "gpt-image-2"
-                else "usage_reported_unpriced",
+                "usage": usage,
+                "cost_status": cost_status,
             },
             artifacts=outputs,
-            cost_usd=self.estimate_cost(inputs) if model == "gpt-image-2" else None,
+            cost_usd=cost,
             duration_seconds=round(time.time() - start, 2),
             model=model,
         )

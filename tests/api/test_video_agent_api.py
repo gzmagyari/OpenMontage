@@ -173,6 +173,7 @@ async def test_video_job_end_to_end(agent_client, fake_sdk):
     # The brief carried the request and the locked rules.
     brief = fake_sdk.calls[0]["prompt"]
     assert "example.com" in brief and "h3max-acting" in brief and "$5.00" in brief
+    assert '`openai_image` with `model: "gpt-image-2.6-sunburst"` and `quality: "high"`' in brief
     options = fake_sdk.calls[0]["options"]
     assert options.permission_mode == "bypassPermissions"
     assert options.setting_sources == ["project"]

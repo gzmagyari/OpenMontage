@@ -424,7 +424,8 @@ def test_openai_25_uses_edit_and_closes_files(monkeypatch, tmp_path):
     assert result.success, result.error
     assert calls[0]["model"] == "gpt-image-2.5-sunburst"
     assert calls[0]["image"][0].closed
-    assert result.cost_usd is None
+    # No usage reported: billed at the quote (max quality plus one source image), never as free.
+    assert abs(result.cost_usd - 0.24) < 1e-9
 
 
 def test_direct_eleven_v4_continuity_and_pcm(monkeypatch, tmp_path):

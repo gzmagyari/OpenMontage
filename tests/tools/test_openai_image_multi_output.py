@@ -23,9 +23,20 @@ class _FakeImage:
         self.b64_json = base64.b64encode(payload).decode()
 
 
+class _FakeUsage:
+    def __init__(self, usage: dict):
+        self._usage = usage
+
+    def model_dump(self):
+        return dict(self._usage)
+
+
 class _FakeResponse:
     def __init__(self, n: int):
         self.data = [_FakeImage(f"IMAGE_{i}".encode()) for i in range(n)]
+        # The usage OpenAI reported for a real gpt-image-2.6-sunburst call (high, 1024x1536).
+        self.usage = _FakeUsage({"input_tokens": 97, "input_tokens_details": {"image_tokens": 0, "text_tokens": 97},
+                                 "output_tokens": 1372 * n, "total_tokens": 97 + 1372 * n})
 
 
 class _FakeImages:
@@ -89,3 +100,30 @@ def test_multi_output_paths_are_suffixed_and_unique():
     paths = OpenAIImage._output_paths("/tmp/art/pic.png", 3, "png")
     assert [p.name for p in paths] == ["pic_1.png", "pic_2.png", "pic_3.png"]
     assert len(set(paths)) == 3
+
+
+def test_gpt_image_2_6_is_billed_from_the_usage_it_reports(openai_tool, tmp_path):
+    inputs = {"prompt": "p", "model": "gpt-image-2.6-sunburst", "quality": "high", "size": "1024x1536",
+              "output_path": str(tmp_path / "portrait.png")}
+    result = openai_tool.execute(inputs)
+
+    assert result.success
+    assert result.data["cost_status"] == "usage_priced"
+    # 97 text tokens at $5/M + 1372 image output tokens at $30/M.
+    assert result.cost_usd == pytest.approx(0.041645)
+    # The quote the budget checks before the call sits above that.
+    assert openai_tool.estimate_cost(inputs) == pytest.approx(0.06)
+
+
+def test_a_token_billed_call_without_usage_is_billed_at_its_quote(openai_tool, tmp_path, monkeypatch):
+    monkeypatch.setattr(_FakeResponse, "__init__", lambda self, n: setattr(self, "data", [_FakeImage(b"X")]))
+    inputs = {"prompt": "p", "model": "gpt-image-2.5-sunburst", "quality": "xhigh",
+              "output_path": str(tmp_path / "x.png")}
+    result = openai_tool.execute(inputs)
+    assert result.success and result.cost_usd == pytest.approx(0.10)
+
+
+def test_edits_quote_their_source_images(openai_tool, tmp_path):
+    inputs = {"prompt": "p", "model": "gpt-image-2.6-sunburst", "quality": "high",
+              "image_paths": [str(tmp_path / "a.png"), str(tmp_path / "b.png")]}
+    assert openai_tool.estimate_cost(inputs) == pytest.approx(0.06 + 2 * 0.02)
