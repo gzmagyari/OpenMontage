@@ -290,6 +290,10 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
                 ctx.set_stage(mapped[0], ctx.job.stage_detail, progress=mapped[1])
         stages.tools_seen = len(state.tools_started)
         for denial in state.denials[denials_seen:]:
+            if denial.get("reason") == "unpriced":
+                ctx.warn(f"refused a {denial.get('tool')} call: the tool can't quote a price, "
+                         "so it can't run in a paid job")
+                continue
             ctx.set_detail("paid-generation budget reached; finishing with what exists")
             ctx.warn(f"budget enforcement denied a {denial.get('tool')} call at "
                      f"${float(denial.get('spent_usd') or 0):.2f} spent of the "

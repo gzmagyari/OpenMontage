@@ -19,7 +19,9 @@ Two files:
 A job's spend is every finished call's reported cost, plus the estimate of a call that
 started and hasn't finished: it may still be billed (a killed command, a provider
 still rendering). A later success for the same output replaces such a call, so a resume
-or a retry after a timeout counts once.
+or a retry after a timeout counts once. A successful call that reports no cost counts at
+its quote. A tool with no price for a call (PriceQuoteRequired) is refused, since its
+spend could be neither billed nor held to the budget.
 """
 
 from __future__ import annotations
@@ -66,6 +68,14 @@ def deny_message(spent_usd: float, budget_usd: float, tool: str, estimate_usd: f
         f"and this {tool} call {needs}. Buy nothing further: no retries of this call, no other paid "
         "tools. Finish the video NOW from the assets that already exist - assemble, render and export "
         "the best cut, then write RUN_REPORT.md noting what the budget could not cover."
+    )
+
+
+def unpriced_message(tool: str) -> str:
+    return (
+        f"NO PRICE FOR THIS CALL: {tool} cannot quote what this call would cost, so it cannot run in "
+        "a paid job (its spend could be neither billed nor held to the budget). Nothing was spent and "
+        "the budget is unchanged. Do this step with a tool or model that quotes its price, or without it."
     )
 
 
@@ -162,14 +172,16 @@ class ToolCall:
     id: str
     details: dict[str, Any]
     denied: str | None = None  # the message for the agent when the budget refuses this call
+    estimate_usd: float | None = None
 
 
 def begin_call(directory: Path, *, tool: str, provider: str | None, inputs: Any,
-               estimate_usd: float | None) -> ToolCall:
+               estimate_usd: float | None, unpriced: bool = False) -> ToolCall:
     """Allow or deny one tool call, and note that it started: the job's stage follows what really
     ran. ``estimate_usd`` is None when the tool can't quote it: it then passes until the budget is
-    used up. A free call (estimate 0) always passes, so the wrap-up (mixing, rendering, exporting)
-    can still run on a spent budget."""
+    used up, unless ``unpriced`` says the tool has no price for it at all, which is refused. A free
+    call (estimate 0) always passes, so the wrap-up (mixing, rendering, exporting) can still run on
+    a spent budget."""
     source = inputs if isinstance(inputs, dict) else {}
     details = {
         "tool": tool,
@@ -177,7 +189,11 @@ def begin_call(directory: Path, *, tool: str, provider: str | None, inputs: Any,
         "model": source.get("model") or source.get("model_id"),
         "output_path": str(source["output_path"]) if source.get("output_path") else None,
     }
-    call = ToolCall(id=uuid.uuid4().hex, details=details)
+    call = ToolCall(id=uuid.uuid4().hex, details=details, estimate_usd=estimate_usd)
+    if unpriced:
+        call.denied = unpriced_message(tool)
+        _append(directory, {"event": "denied", **details, "reason": "unpriced"})
+        return call
     budget = read_budget(directory)
     if budget is not None:
         spent = summarize(read_entries(directory)).spent_usd
@@ -192,6 +208,9 @@ def begin_call(directory: Path, *, tool: str, provider: str | None, inputs: Any,
 
 
 def finish_call(directory: Path, call: ToolCall, *, cost_usd: Any, success: Any) -> None:
-    """Record what the call really cost."""
-    _append(directory, {"event": "finish", "id": call.id, **call.details, "cost_usd": _usd(cost_usd),
-                        "success": bool(success)})
+    """Record what the call really cost. A successful call that reports no cost is recorded at its
+    quote: a paid call is never free."""
+    entry = {"event": "finish", "id": call.id, **call.details, "cost_usd": _usd(cost_usd), "success": bool(success)}
+    if cost_usd is None and success and _usd(call.estimate_usd):
+        entry.update(cost_usd=_usd(call.estimate_usd), cost_source="quote")
+    _append(directory, entry)

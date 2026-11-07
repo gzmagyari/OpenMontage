@@ -61,6 +61,12 @@ class FalMedia(BaseTool):
         "provider_params",
     ]
 
+    # Video endpoint -> USD per output second, from fal's pricing API, for the routes a subclass
+    # has priced. Any other route still needs a quote, and a paid job refuses it.
+    unit_prices: dict[str, float] = {}
+    # fal: an output can run up to about this much longer than the requested duration.
+    DURATION_OVERRUN_SECONDS = 0.7
+
     @property
     @abstractmethod
     def routes(self):
@@ -116,19 +122,46 @@ class FalMedia(BaseTool):
                 "verified_on": max(
                     CONTRACTS[e].get("verified_on", "2026-10-03") for e in r.values()
                 ),
-                "pricing_status": "quote_required",
+                **self._pricing(r),
             }
             for m, r in self.routes.items()
         }
         return info
 
-    def estimate_cost(self, inputs):
-        # No fabricated per-image/per-second rates. Callers must obtain a quote.
-        raise PriceQuoteRequired(
-            "A current fal price quote is required for this model/operation"
-        )
+    def _pricing(self, routes):
+        prices = {op: self.unit_prices[e] for op, e in routes.items() if e in self.unit_prices}
+        if len(prices) == len(routes):
+            return {"pricing_status": "priced", "usd_per_output_second": prices}
+        return {"pricing_status": "quote_required"}
 
-    def build_request(self, inputs):
+    def _requested_seconds(self, inputs, endpoint):
+        native = inputs.get("provider_params")
+        native = native if isinstance(native, dict) else {}
+        default = CONTRACTS[endpoint]["input_schema"]["properties"].get("duration", {}).get("default", 5)
+        return float(native.get("duration") or inputs.get("duration") or default)
+
+    def estimate_cost(self, inputs):
+        endpoint = self._route(inputs)[2]
+        rate = self.unit_prices.get(endpoint)
+        if rate is None:
+            # No fabricated per-image/per-second rates. Callers must obtain a quote.
+            raise PriceQuoteRequired(
+                "A current fal price quote is required for this model/operation"
+            )
+        seconds = self._requested_seconds(inputs, endpoint) + self.DURATION_OVERRUN_SECONDS
+        return round(rate * seconds, 4)
+
+    def _output_cost(self, endpoint, output, inputs):
+        """What fal bills for a priced route: its rate times the delivered clip's length."""
+        rate = self.unit_prices.get(endpoint)
+        if rate is None:
+            return None
+        from tools.analysis.audio_probe import probe_duration
+
+        seconds = probe_duration(output) or self._requested_seconds(inputs, endpoint)
+        return round(rate * seconds, 4)
+
+    def _route(self, inputs):
         model = inputs.get("model", next(iter(self.routes)))
         references = any(
             inputs.get(k)
@@ -156,6 +189,10 @@ class FalMedia(BaseTool):
         endpoint = self.routes.get(model, {}).get(operation)
         if not endpoint:
             raise ValueError(f"Unsupported model/operation: {model}/{operation}")
+        return model, operation, endpoint
+
+    def build_request(self, inputs):
+        model, operation, endpoint = self._route(inputs)
         schema = CONTRACTS[endpoint]["input_schema"]
         props = schema["properties"]
         payload = {k: v for k, v in inputs.items() if k in props}
@@ -301,6 +338,7 @@ class FalMedia(BaseTool):
                 )
                 for i, v in enumerate(values)
             ]
+            cost = self._output_cost(job["endpoint"], outputs[0], inputs)
             return ToolResult(
                 success=True,
                 data={
@@ -311,11 +349,11 @@ class FalMedia(BaseTool):
                     "output": outputs[0],
                     "outputs": outputs,
                     "resume_job": job,
-                    "cost_status": "unquoted",
+                    "cost_status": "priced" if cost is not None else "unquoted",
                     "provider_result": result,
                 },
                 artifacts=outputs,
-                cost_usd=None,
+                cost_usd=cost,
                 model=job["model"],
             )
         except Exception as exc:

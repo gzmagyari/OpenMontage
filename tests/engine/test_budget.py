@@ -19,6 +19,7 @@ import pytest
 from engine.agent.budget import BudgetMeter
 from lib import job_ledger
 from tools.base_tool import BaseTool, ToolResult
+from tools.provider_pricing import PriceQuoteRequired
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -45,6 +46,19 @@ class FreeTool(BaseTool):
 
     def execute(self, inputs):
         return ToolResult(success=True, cost_usd=0.0)
+
+
+class UnpricedTool(BaseTool):
+    name = "fake_unpriced"
+    provider = "fal.ai"
+    runs = 0
+
+    def estimate_cost(self, inputs):
+        raise PriceQuoteRequired("A current fal price quote is required for this model/operation")
+
+    def execute(self, inputs):
+        type(self).runs += 1
+        return ToolResult(success=True, cost_usd=None)
 
 
 class SelectorTool(BaseTool):
@@ -104,6 +118,36 @@ def test_a_call_with_no_quote_passes_until_the_budget_is_spent(ledger_dir):
     assert PaidTool().execute({"no_quote": True, "cost": 1.0}).success
     denied = PaidTool().execute({"no_quote": True})
     assert denied.success is False and "cannot be quoted" in denied.error
+
+
+def test_a_paid_tool_with_no_price_is_refused_in_a_job(ledger_dir):
+    UnpricedTool.runs = 0
+    refused = UnpricedTool().execute({"output_path": "/p/hook.mp4"})
+    assert refused.success is False and "NO PRICE FOR THIS CALL" in refused.error
+    assert "Nothing was spent" in refused.error and "BUDGET REACHED" not in refused.error
+    assert UnpricedTool.runs == 0, "the provider is never called"
+
+    state = state_of(ledger_dir)
+    assert state.spent_usd == 0 and [d.get("reason") for d in state.denials] == ["unpriced"]
+    assert PaidTool().execute({}).success, "the refusal leaves the budget untouched"
+
+
+def test_outside_a_job_a_tool_with_no_price_still_runs(monkeypatch):
+    monkeypatch.delenv(job_ledger.LEDGER_DIR_ENV, raising=False)
+    UnpricedTool.runs = 0
+    assert UnpricedTool().execute({}).success and UnpricedTool.runs == 1
+
+
+def test_a_paid_call_that_reports_no_cost_is_billed_at_its_quote(ledger_dir):
+    assert PaidTool().execute({"estimate": 0.20, "cost": None, "output_path": "/p/clip.mp4"}).success
+    assert state_of(ledger_dir).spent_usd == 0.20
+    finish = [e for e in job_ledger.read_entries(ledger_dir) if e["event"] == "finish"][-1]
+    assert finish["cost_source"] == "quote"
+
+    # A failed call that reports nothing stays free, and a reported $0 (a resume) is kept.
+    assert PaidTool().execute({"estimate": 0.20, "cost": None, "success": False}).success is False
+    assert PaidTool().execute({"resume_job": {"id": "1"}, "cost": 0.0}).success
+    assert state_of(ledger_dir).spent_usd == 0.20
 
 
 def test_a_resume_is_never_denied(ledger_dir):

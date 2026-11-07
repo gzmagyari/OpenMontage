@@ -247,15 +247,20 @@ def _instrument_execute(fn: Callable) -> Callable:
 _BUDGET_DEPTH = _threading.local()
 
 
-def _budget_quote(tool: Any, inputs: Any) -> Optional[float]:
-    """A call's price for the budget check. None when the tool can't quote it; 0 for
-    a resume, whose provider job is already paid for."""
+def _budget_quote(tool: Any, inputs: Any) -> tuple[Optional[float], bool]:
+    """A call's price for the budget check, and whether the tool has no price for it at all
+    (PriceQuoteRequired). The price is None when it can't be quoted; 0 for a resume, whose
+    provider job is already paid for."""
+    from tools.provider_pricing import PriceQuoteRequired
+
     if isinstance(inputs, dict) and inputs.get("resume_job"):
-        return 0.0
+        return 0.0, False
     try:
-        return max(0.0, float(tool.estimate_cost(inputs)))
+        return max(0.0, float(tool.estimate_cost(inputs))), False
+    except PriceQuoteRequired:
+        return None, True
     except Exception:
-        return None
+        return None, False
 
 
 def _budget_execute(fn: Callable) -> Callable:
@@ -282,12 +287,14 @@ def _budget_execute(fn: Callable) -> Callable:
             return fn(self, inputs, *args, **kwargs)
 
         try:
+            estimate_usd, unpriced = _budget_quote(self, inputs)
             call = job_ledger.begin_call(
                 directory,
                 tool=getattr(self, "name", "") or self.__class__.__name__,
                 provider=getattr(self, "provider", None),
                 inputs=inputs,
-                estimate_usd=_budget_quote(self, inputs),
+                estimate_usd=estimate_usd,
+                unpriced=unpriced,
             )
         except Exception:
             return fn(self, inputs, *args, **kwargs)

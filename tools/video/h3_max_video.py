@@ -14,3 +14,9 @@ class H3MaxVideo(FalMedia):
     routes = {
         "h3-max": {op: f"minimax/h3-max/{op.replace('_', '-')}" for op in capabilities}
     }
+    # fal pricing API, 2026-11-07.
+    unit_prices = {
+        "minimax/h3-max/image-to-video": 0.035,
+        "minimax/h3-max/text-to-video": 0.035,
+        "minimax/h3-max/reference-to-video": 0.05,
+    }

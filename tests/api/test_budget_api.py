@@ -230,6 +230,19 @@ async def test_lowering_the_budget_reaches_the_tools_and_a_denial_surfaces(meter
     assert any("budget enforcement denied a fal_avatar call" in warning for warning in done["warnings"])
 
 
+async def test_a_tool_with_no_price_is_refused_without_ending_the_run(metered):
+    http, sdk = metered
+    sdk.at_mid_run = lambda options: job_ledger.begin_call(
+        ledger_dir(options), tool="h3_max_video", provider="fal.ai",
+        inputs={"output_path": "/p/hook.mp4"}, estimate_usd=None, unpriced=True)
+    sdk.resume.set()
+    job_id = (await http.post("/v1/videos", json={"prompt": "an unpriced clip"})).json()["id"]
+    done = await _wait_for(_terminal, "the end of the job", http, job_id)
+    assert done["status"] == "completed"
+    assert any("refused a h3_max_video call: the tool can't quote a price" in w for w in done["warnings"])
+    assert not any("budget enforcement denied" in w for w in done["warnings"])
+
+
 async def test_spend_past_the_ceiling_stops_the_run(metered):
     """The watchdog sees real spend, so it fires on calls the guard could not stop."""
     http, sdk = metered

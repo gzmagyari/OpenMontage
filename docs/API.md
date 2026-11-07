@@ -54,8 +54,12 @@ Job lifecycle: `[draft ->] queued -> running -> completed | failed | cancelled`,
 (`code`, `message`, `retryable`). The cost ledger is LIVE: while the job runs it carries the
 Claude-loop estimate (metered from per-message token usage, replaced by the exact SDK figure at
 the end) plus what every paid tool call recorded in the job's tool ledger (a call still running
-counts at its estimate, replaced by its real cost when it finishes) - so a poll shows real spend
-as it happens, and a failed, cancelled or timed-out job keeps everything spent up to that moment.
+counts at its estimate, replaced by its real cost when it finishes; a successful call that reports
+no cost counts at its quote) - so a poll shows real spend as it happens, and a failed, cancelled or
+timed-out job keeps everything spent up to that moment. A paid tool that has no price for a call
+(`PriceQuoteRequired`, e.g. a fal route nobody has priced yet) is refused inside a job, since its
+spend could be neither billed nor budgeted; the agent is told to use a priced tool, and the job gets
+a warning.
 A revision's ledger holds only what that revision spent, Claude included: it forks the parent's
 session, so a revision that failed is neither billed to the next one nor in its history. `options.max_budget_usd`
 is enforced, not advisory: every tool's `execute()` checks it, so paid calls past it are denied
