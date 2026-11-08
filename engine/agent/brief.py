@@ -142,6 +142,19 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
     screenshots downloaded from the client's own site are references, not generated images: use
     them as they are.
 
+## Plan first, then produce
+
+Gather everything the plan needs first (the request, the researched site and its downloaded real
+assets, the reference files) - then write the complete video plan to
+`{project}/artifacts/video_plan.md` BEFORE the first paid generation call. The plan states: the
+angle and the muted-viewable hook (what the first frame shows and why it stops a scroller); the
+exact script with second marks; a numbered shot list in which every shot names what is on screen,
+where its visual comes from (avatar take, animated still, real site screenshot) and how it moves;
+the presenter and the voice; the music direction; every piece of on-screen text; and the expected
+paid calls. Post one progress note giving the plan in a sentence or two, then start producing it
+immediately - the plan needs no approval, and production follows it shot by shot. If production
+forces a change, update the plan file and record the reason in the decision log and RUN_REPORT.md.
+
 ## Quality bar
 
 - Review every generated take before using it: extract frames at the start and middle, check the
@@ -185,10 +198,12 @@ running unattended: never pause for approval, decide and record. Their feedback:
 
 {feedback.strip()}
 
-Apply the feedback with the smallest change that honors it: reuse every asset that is still right,
-regenerate only what the feedback touches, and keep every locked production decision from the
-original brief (one voice, fal_avatar h3max-acting for on-camera speech, h3_max_video motion on
-scenes without a take, {IMAGE_MODEL} at {IMAGE_QUALITY} quality for any new image, review gates).
+Read {project}/artifacts/video_plan.md first to see what the video was built to be, then apply the
+feedback with the smallest change that honors it: reuse every asset that is still right, regenerate
+only what the feedback touches, and keep every locked production decision from the original brief
+(one voice, fal_avatar h3max-acting for on-camera speech, h3_max_video motion on scenes without a
+take, {IMAGE_MODEL} at {IMAGE_QUALITY} quality for any new image, review gates). Update the plan
+file where the revision changes it.
 Additional paid-generation budget for this revision: ${budget_usd:.2f}; keep logging costs to
 {project}/artifacts/cost_log.json.
 

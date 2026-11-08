@@ -50,6 +50,24 @@ def test_the_brief_demands_motion_on_every_scene():
     assert "image_to_video" in brief
 
 
+def test_the_brief_demands_a_written_plan_before_paid_work():
+    # A planned video comes out far better than an improvised one (owner, 2026-11-08), so the
+    # director writes the full plan after research and before the first paid call, then executes
+    # it at once - no approval pause in an unattended run.
+    brief = _brief("job_plan")
+    section = brief.split("## Plan first, then produce", 1)[1].split("\n## ", 1)[0]
+    assert "/data/projects/job_plan/artifacts/video_plan.md" in section.replace("\\", "/")
+    assert "BEFORE the first paid generation call" in section
+    assert "needs no approval" in section
+    assert "video_plan.md" in build_revise_prompt_text()
+
+
+def build_revise_prompt_text() -> str:
+    from engine.agent.brief import build_revise_prompt
+    return build_revise_prompt(feedback="Tighten the hook", project_dir=Path("/data/projects/job_plan"),
+                               budget_usd=1.2)
+
+
 def test_the_brief_treats_the_budget_as_production_fuel():
     # The same run spent $0.99 of its $6.00 cap on static coverage.
     brief = _brief().replace("\n  ", " ")
