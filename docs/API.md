@@ -159,16 +159,26 @@ is kept per job, so a revision resumed after a restart keeps its own earlier ent
 
 ```bash
 make docker-build
-make docker-run           # --init --shm-size=2g, /data volume, and the two box options below
+make docker-run           # --init --shm-size=2g, /data volume, and the three box options below
 ```
 
-Every video job's agent runs in its own box (see "Agent boxes" below), which needs two options on
-the container: `--security-opt seccomp=docker/seccomp-openmontage.json` (Docker's default profile
-refuses the namespace calls bubblewrap needs; this one allows them and still refuses the kernel
-administration calls nothing here uses) and `--security-opt systempaths=unconfined` (lets a box
-forbid nested boxes). Without them, video jobs fail with `agent_unavailable` instead of running
-unboxed. After a rebuild, run `python scripts/agent_box_check.py` in the container (no cost), then
-`scripts/agent_session_smoke.py` (about $0.01).
+Every video job's agent runs in its own box (see "Agent boxes" below), which needs three options on
+the container:
+
+- `--security-opt seccomp=docker/seccomp-openmontage.json`: Docker's default profile refuses the
+  namespace calls bubblewrap needs; this one allows them and still refuses the kernel
+  administration calls nothing here uses.
+- `--security-opt systempaths=unconfined`: lets a box forbid nested boxes.
+- `--security-opt apparmor=unconfined`: on hosts that run AppArmor (Ubuntu), Docker's
+  `docker-default` profile forbids `mount` and `pivot_root`, which bubblewrap needs to build a box.
+  Hosts without AppArmor (Docker Desktop) ignore it.
+
+The container runs as an ordinary user (uid 10001) with no capabilities, and each box still applies
+on top. Without these options, video jobs fail with `agent_unavailable` instead of running unboxed,
+and `GET /readyz` answers 503 with `agent_box: false` and the reason under `problems`, so a deploy
+can check the box without running anything in the container. After a rebuild, run
+`python scripts/agent_box_check.py` in the container (no cost), then `scripts/agent_session_smoke.py`
+(about $0.01).
 
 ## Agent boxes
 

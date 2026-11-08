@@ -17,6 +17,7 @@ services:
     security_opt:       # lets bubblewrap build each job's agent box (docs/API.md, "Agent boxes")
       - seccomp=docker/seccomp-openmontage.json
       - systempaths=unconfined
+      - apparmor=unconfined   # AppArmor hosts (Ubuntu): docker-default forbids mount and pivot_root
     shm_size: "2gb"     # Chrome needs more than Docker's 64 MB default /dev/shm
     restart: unless-stopped
     stop_grace_period: 40s  # running jobs are checkpointed and resume on the next start

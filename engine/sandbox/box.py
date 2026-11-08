@@ -61,7 +61,8 @@ def sandbox_problem() -> str | None:
     if done.returncode != 0:
         detail = done.stderr.decode("utf-8", "replace").strip()[:300]
         return ("bubblewrap cannot create a box in this container (start it with "
-                f"--security-opt seccomp=docker/seccomp-openmontage.json --security-opt systempaths=unconfined): {detail}")
+                "--security-opt seccomp=docker/seccomp-openmontage.json --security-opt systempaths=unconfined "
+                f"--security-opt apparmor=unconfined): {detail}")
     return None
 
 

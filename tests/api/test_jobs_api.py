@@ -26,6 +26,26 @@ async def test_health_needs_no_auth(client):
     assert r.status_code == 200 and r.json()["status"] == "ok"
 
 
+async def test_ready_checks_the_agent_box_when_boxes_are_required(client, settings, monkeypatch):
+    import dataclasses
+
+    from engine.sandbox import box
+
+    r = await client.get("/readyz", headers={"Authorization": ""})
+    assert "agent_box" not in r.json()["checks"]  # boxes off (tests, development hosts)
+
+    monkeypatch.setattr(client.app.state, "settings", dataclasses.replace(settings, agent_sandbox="required"))
+    monkeypatch.setattr(box, "sandbox_problem", lambda: "bubblewrap cannot create a box")
+    r = await client.get("/readyz", headers={"Authorization": ""})
+    assert r.status_code == 503
+    assert r.json()["checks"]["agent_box"] is False
+    assert r.json()["problems"] == {"agent_box": "bubblewrap cannot create a box"}
+
+    monkeypatch.setattr(box, "sandbox_problem", lambda: None)
+    r = await client.get("/readyz", headers={"Authorization": ""})
+    assert r.json()["checks"]["agent_box"] is True and "problems" not in r.json()
+
+
 async def test_auth_required(client):
     r = await client.post("/v1/videos", json=VIDEO, headers={"Authorization": "Bearer wrong"})
     assert r.status_code == 401

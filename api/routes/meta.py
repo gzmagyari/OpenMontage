@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 
@@ -31,8 +32,21 @@ async def readyz(request: Request):
         "anthropic_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "data_dir_writable": os.access(settings.data_dir, os.W_OK),
     }
+    problems = {}
+    if getattr(settings, "agent_sandbox", "off") == "required":
+        # Video jobs need a box, so a host that can't build one isn't ready. A deploy sees it
+        # here without running anything in the container.
+        from engine.sandbox.box import sandbox_problem  # engine.sandbox imports engine.agent
+
+        problem = await asyncio.to_thread(sandbox_problem)
+        checks["agent_box"] = problem is None
+        if problem:
+            problems["agent_box"] = problem
     ok = all(checks.values())
-    return JSONResponse({"ready": ok, "checks": checks}, status_code=200 if ok else 503)
+    body = {"ready": ok, "checks": checks}
+    if problems:
+        body["problems"] = problems
+    return JSONResponse(body, status_code=200 if ok else 503)
 
 
 @router.get("/capabilities")

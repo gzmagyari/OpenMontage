@@ -1,5 +1,5 @@
 {
-  "comment": "OpenMontage API container. Docker's default profile also blocks the namespace calls bubblewrap needs to build each job's agent box, so this profile allows those and refuses the kernel-administration calls Docker refuses by default that nothing here uses. 64-bit x86 only. Run with: --security-opt seccomp=docker/seccomp-openmontage.json --security-opt systempaths=unconfined (see docs/API.md).",
+  "comment": "OpenMontage API container. Docker's default profile also blocks the namespace calls bubblewrap needs to build each job's agent box, so this profile allows those and refuses the kernel-administration calls Docker refuses by default that nothing here uses. 64-bit x86 only. Run with: --security-opt seccomp=docker/seccomp-openmontage.json --security-opt systempaths=unconfined --security-opt apparmor=unconfined (see docs/API.md).",
   "defaultAction": "SCMP_ACT_ALLOW",
   "architectures": ["SCMP_ARCH_X86_64"],
   "syscalls": [

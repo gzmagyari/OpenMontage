@@ -2,10 +2,11 @@
 #
 #   docker build -f docker/Dockerfile -t openmontage-api .
 #   docker run --init --shm-size=2g -p 8710:8080 --env-file .env -v openmontage-data:/data \
-#     --security-opt seccomp=docker/seccomp-openmontage.json --security-opt systempaths=unconfined openmontage-api
+#     --security-opt seccomp=docker/seccomp-openmontage.json --security-opt systempaths=unconfined \
+#     --security-opt apparmor=unconfined openmontage-api
 #
 # The container listens on 8080 internally; map whatever host port suits you (-p HOST:8080).
-# The two --security-opt flags let bubblewrap build each job's agent box (engine/sandbox/);
+# The three --security-opt flags let bubblewrap build each job's agent box (engine/sandbox/);
 # without them every video job fails with agent_unavailable instead of running unboxed.
 #
 # Ships the full video API: FastAPI job layer + one unattended Claude Agent SDK session
