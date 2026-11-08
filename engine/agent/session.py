@@ -29,6 +29,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk import query as sdk_query  # tests monkeypatch engine.agent.session.sdk_query
+from claude_agent_sdk.types import EffortLevel
 
 # Nothing inherited may redirect auth or behaviour: the session env is rebuilt
 # from scratch and exactly one credential is injected (saasbatch's SCRUB rule).
@@ -148,6 +149,7 @@ class AgentSession:
         transcript_path: Path,
         model: str,
         max_turns: int,
+        effort: EffortLevel | None = None,
         max_claude_usd: float | None = None,
         resume: str | None = None,
         fork: bool = False,
@@ -169,6 +171,7 @@ class AgentSession:
         self.transcript_path = transcript_path
         self.model = model
         self.max_turns = max_turns
+        self.effort = effort
         self.max_claude_usd = max_claude_usd
         self.resume = resume
         self.fork = fork              # resume as a new session, leaving the original untouched
@@ -259,6 +262,7 @@ class AgentSession:
             settings=self.settings_json,
             cwd=str(self.repo_root),
             model=self.model,
+            effort=self.effort,
             max_turns=self.max_turns,
             max_budget_usd=self.max_claude_usd,
             permission_mode="bypassPermissions",

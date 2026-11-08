@@ -274,6 +274,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     (agent_dir / "project_dir.txt").write_text(str(project_dir), encoding="utf-8")
     stages = StageTracker()
     model = getattr(settings, "agent_model", "claude-haiku-5-5")
+    effort = getattr(settings, "agent_effort", None)
     wall_minutes = getattr(settings, "agent_wall_time_minutes", 45)
 
     # Live money state. Every tool call in the session checks the budget file and appends to the
@@ -393,6 +394,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             journal_path=agent_dir / "journal.jsonl",
             transcript_path=agent_dir / "transcript.jsonl",
             model=model,
+            effort=effort,
             max_turns=getattr(settings, "agent_max_turns", 500),
             max_claude_usd=getattr(settings, "agent_max_claude_usd", None),
             resume=session_resume,
@@ -509,7 +511,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         "files": files,
         "session_id": outcome.session_id,
         "project_dir": str(project_dir),
-        "agent": {"model": model, "cost_usd": round(outcome.total_cost_usd, 4),
+        "agent": {"model": model, "effort": effort, "cost_usd": round(outcome.total_cost_usd, 4),
                   "turns": outcome.num_turns, "duration_ms": outcome.duration_ms},
     }
 

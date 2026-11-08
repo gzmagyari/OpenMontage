@@ -45,6 +45,17 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _effort(name: str) -> str | None:
+    """A Claude reasoning-effort level, or None for the model's default."""
+    raw = _env(name)
+    if raw is None:
+        return None
+    value = raw.strip().lower()
+    if value not in {"low", "medium", "high", "xhigh", "max"}:
+        raise ValueError(f"{name} must be one of low|medium|high|xhigh|max, got {raw!r}")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -64,6 +75,7 @@ class Settings:
     agent_max_claude_usd: float | None
     agent_concurrency: int
     agent_sandbox: str = "required"
+    agent_effort: str | None = None
 
     @property
     def jobs_dir(self) -> Path:
@@ -103,6 +115,8 @@ def load_settings() -> Settings:
         # Every job's agent runs in its own box (engine/sandbox/). "required" fails a job that
         # cannot get one; "off" runs the agent unboxed, for development hosts and tests only.
         agent_sandbox=_str("OPENMONTAGE_AGENT_SANDBOX", "required").strip().lower(),
+        # Reasoning effort for the agent model (low|medium|high|xhigh|max); unset = model default.
+        agent_effort=_effort("OPENMONTAGE_AGENT_EFFORT"),
     )
 
 
