@@ -4,6 +4,9 @@
 .env
 .env.*
 *.env
+# Local working notes and review exports; the agent box can read everything under /app.
+docs/SAAS_HANDOFF.md
+exports_review
 .venv
 venv
 **/__pycache__

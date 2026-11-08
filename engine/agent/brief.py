@@ -95,6 +95,13 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
   keeping a bad take.
 - No overlapping or duplicated on-screen text; music must never drown the voice.
 
+## Progress notes
+
+Nobody can answer you, but the client follows your messages live while the video is made. Before
+each step, write one short sentence on what you are doing or what you just found, in plain words
+about the video (the script, the presenter, the voice, the shots, the music, the captions, the
+edit). Leave file names, tool and model names, commands and costs out of these sentences.
+
 ## Budget, limits, reporting
 
 - Hard cap: ${budget_usd:.2f} total paid generation for this run. Estimate before every paid call
