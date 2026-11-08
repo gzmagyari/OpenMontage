@@ -1,9 +1,12 @@
 # OpenMontage video-generator API - CPU-only image.
 #
 #   docker build -f docker/Dockerfile -t openmontage-api .
-#   docker run --init --shm-size=2g -p 8710:8080 --env-file .env -v openmontage-data:/data openmontage-api
+#   docker run --init --shm-size=2g -p 8710:8080 --env-file .env -v openmontage-data:/data \
+#     --security-opt seccomp=docker/seccomp-openmontage.json --security-opt systempaths=unconfined openmontage-api
 #
 # The container listens on 8080 internally; map whatever host port suits you (-p HOST:8080).
+# The two --security-opt flags let bubblewrap build each job's agent box (engine/sandbox/);
+# without them every video job fails with agent_unavailable instead of running unboxed.
 #
 # Ships the full video API: FastAPI job layer + one unattended Claude Agent SDK session
 # per video job (the Claude Code runtime is installed below) + Remotion rendering.
@@ -21,6 +24,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # ffmpeg + the shared libraries Chrome Headless Shell (Remotion) needs on Debian, plus emoji fonts.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
+      bubblewrap socat \
       ffmpeg ca-certificates curl fonts-noto-color-emoji fonts-dejavu-core libgl1 libglib2.0-0 \
       libnss3 libdbus-1-3 libatk1.0-0 libgbm-dev libasound2 libxrandr2 libxkbcommon-dev libxfixes3 \
       libxcomposite1 libxdamage1 libatk-bridge2.0-0 libpango-1.0-0 libcairo2 libcups2 \
@@ -48,6 +52,11 @@ RUN pip install -r requirements-api.txt
 # faster-whisper (word-timestamp captions) and piper-tts (offline TTS fallback).
 RUN pip install faster-whisper piper-tts
 
+# The caption models, built in: an agent box has no network of its own and reads them read-only.
+ENV HF_HOME=/opt/hf
+RUN python -c "from faster_whisper import download_model; [download_model(size) for size in ('base', 'small')]" \
+ && chmod -R a+rX /opt/hf
+
 # Remotion dependencies (cached layer) + Chrome Headless Shell for renders.
 COPY remotion-composer/package.json remotion-composer/package-lock.json remotion-composer/
 RUN cd remotion-composer \
@@ -58,7 +67,9 @@ RUN cd remotion-composer \
 COPY . .
 
 # Everything the service writes lives on the /data volume (the code tree is read-only for `app`).
-ENV OPENMONTAGE_PROJECTS_DIR=/data/projects
+ENV OPENMONTAGE_PROJECTS_DIR=/data/projects \
+    OPENMONTAGE_AGENT_SANDBOX=required \
+    HF_HUB_OFFLINE=1
 RUN useradd --create-home --uid 10001 app \
  && mkdir -p /data && chown -R app:app /data \
  && chmod -R a+rX /app

@@ -33,6 +33,10 @@ import socket
 
 import pytest
 
+# Jobs here run on fake agent streams, so they need no box (engine/sandbox/). A test that is
+# about the box sets agent_sandbox itself; scripts/agent_box_check.py checks the real one.
+os.environ.setdefault("OPENMONTAGE_AGENT_SANDBOX", "off")
+
 _ALLOW_ENV_FLAG = "OPENMONTAGE_ALLOW_NETWORK"
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", ""}

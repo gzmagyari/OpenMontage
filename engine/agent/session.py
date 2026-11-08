@@ -59,13 +59,33 @@ def _dotenv_value(repo_root: Path, name: str) -> str | None:
     return None
 
 
-def session_env(repo_root: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
-    """A clean environment for one session: scrubbed, keyed, venv on PATH."""
-    env = {key: value for key, value in os.environ.items() if not _SCRUB.match(key)}
+def anthropic_api_key(repo_root: Path) -> str:
     api_key = os.environ.get("ANTHROPIC_API_KEY") or _dotenv_value(repo_root, "ANTHROPIC_API_KEY")
     if not api_key:
         raise AgentUnavailable("ANTHROPIC_API_KEY is not set (environment or .env)")
-    env["ANTHROPIC_API_KEY"] = api_key
+    return api_key
+
+
+def cli_switches() -> dict[str, str]:
+    """The CLI behaviour every job needs, boxed or not."""
+    return {
+        # Unattended runs ride out transient 429/529s instead of failing the turn.
+        "CLAUDE_CODE_RETRY_WATCHDOG": "1",
+        "CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS": str(30 * 60 * 1000),
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        # A slow provider call waits in the foreground. Past the stock 120 s the CLI would move the
+        # command to the background, and the agent would end its turn to wait for it.
+        "BASH_DEFAULT_TIMEOUT_MS": str(20 * 60 * 1000),
+        "BASH_MAX_TIMEOUT_MS": str(30 * 60 * 1000),
+        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+    }
+
+
+def session_env(repo_root: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """An UNBOXED session's environment (development hosts and tests): scrubbed, keyed, venv on
+    PATH. A boxed session gets its environment from engine/sandbox/box.py instead."""
+    env = {key: value for key, value in os.environ.items() if not _SCRUB.match(key)}
+    env["ANTHROPIC_API_KEY"] = anthropic_api_key(repo_root)
     fal_key = os.environ.get("FAL_KEY") or _dotenv_value(repo_root, "FAL_KEY")
     if fal_key:
         env["FAL_KEY"] = fal_key
@@ -73,15 +93,7 @@ def session_env(repo_root: Path, extra: dict[str, str] | None = None) -> dict[st
     venv_scripts = repo_root / ".venv" / ("Scripts" if os.name == "nt" else "bin")
     if venv_scripts.is_dir():
         env["PATH"] = str(venv_scripts) + os.pathsep + env.get("PATH", "")
-    # Unattended runs ride out transient 429/529s instead of failing the turn.
-    env["CLAUDE_CODE_RETRY_WATCHDOG"] = "1"
-    env["CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS"] = str(30 * 60 * 1000)
-    env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
-    # A slow provider call waits in the foreground. Past the stock 120 s the CLI would move the
-    # command to the background, and the agent would end its turn to wait for it.
-    env["BASH_DEFAULT_TIMEOUT_MS"] = str(20 * 60 * 1000)
-    env["BASH_MAX_TIMEOUT_MS"] = str(30 * 60 * 1000)
-    env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+    env.update(cli_switches())
     if extra:
         env.update(extra)
     return env
@@ -143,8 +155,16 @@ class AgentSession:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_message: Callable[[Any], None] | None = None,
         on_tool: Callable[[str, dict[str, Any]], None] | None = None,
+        cli_path: str | None = None,
+        box_env: dict[str, str] | None = None,
+        settings_json: str | None = None,
     ) -> None:
         self.repo_root = repo_root
+        # A boxed session (engine/sandbox/box.py): the SDK starts the box's launcher, whose
+        # environment is only the job's token; the box's own environment is in its spec.
+        self.cli_path = cli_path
+        self.box_env = box_env
+        self.settings_json = settings_json
         self.journal_path = journal_path
         self.transcript_path = transcript_path
         self.model = model
@@ -233,8 +253,10 @@ class AgentSession:
 
     # -- run -------------------------------------------------------------------------
     async def run(self, prompt: str) -> RunOutcome:
-        env = session_env(self.repo_root, self.env_extra)
+        env = dict(self.box_env) if self.box_env is not None else session_env(self.repo_root, self.env_extra)
         options = ClaudeAgentOptions(
+            cli_path=self.cli_path,
+            settings=self.settings_json,
             cwd=str(self.repo_root),
             model=self.model,
             max_turns=self.max_turns,

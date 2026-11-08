@@ -9,6 +9,7 @@ returns) as it happens; exports and the run report become job files.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import mimetypes
 import os
@@ -16,14 +17,18 @@ import re
 import shutil
 import signal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from engine.agent.brief import build_brief, build_revise_prompt
 from engine.agent.budget import BudgetMeter
-from engine.agent.session import AgentAuthError, AgentSession, AgentUnavailable, RunOutcome
+from engine.agent.session import (AgentAuthError, AgentSession, AgentUnavailable, RunOutcome,
+                                  anthropic_api_key, cli_switches)
 from engine.jobs.context import JobContext, JobFailed
 from engine.jobs.models import CostLine
 from lib import job_ledger
+
+if TYPE_CHECKING:  # imported where it is used: engine.sandbox imports engine.agent
+    from engine.sandbox.box import AgentBox
 
 _MAX_REFERENCE_MB = 100
 
@@ -36,6 +41,13 @@ _RESTARTED_PROMPT = (
     "The server restarted and interrupted your run. Continue the original brief in this session: "
     "re-check what already exists in the project directory, finish the remaining work, and stop "
     "once the final MP4 and RUN_REPORT.md exist as briefed."
+)
+# What a stopped job's session is told when the client resumes it.
+_RESUME_PROMPT = (
+    "The client stopped this run before it finished and now wants it finished. You are unattended "
+    "again: never pause for approval. Continue the original brief in this session: re-check what "
+    "already exists in the project directory, reuse it without paying for it again, finish the "
+    "remaining work, and stop once the final MP4 and RUN_REPORT.md exist as briefed."
 )
 # The one follow-up a session gets when it ends without a video.
 _UNFINISHED_PROMPT = (
@@ -258,6 +270,8 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     agent_dir = (ctx.job_dir / "agent").resolve()
     agent_dir.mkdir(parents=True, exist_ok=True)
     session_file = agent_dir / "session_id.txt"
+    # A resume of this job (POST /v1/jobs/{id}/resume) continues here, whatever kind of job it was.
+    (agent_dir / "project_dir.txt").write_text(str(project_dir), encoding="utf-8")
     stages = StageTracker()
     model = getattr(settings, "agent_model", "claude-haiku-5-5")
     wall_minutes = getattr(settings, "agent_wall_time_minutes", 45)
@@ -345,8 +359,35 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     # resumes it, a redeploy can't lose it, and it expires with the project.
     session_home = (project_dir / ".agent_session").resolve()
     session_home.mkdir(parents=True, exist_ok=True)
+    # Each session runs in its own box (engine/sandbox/): no provider key, no other job and no
+    # network inside; Claude, paid tools and public websites only through the job's sockets.
+    boxed = getattr(settings, "agent_sandbox", "off") == "required"
+    claude_cap = float(getattr(settings, "agent_max_claude_usd", None) or 3.0)
+    gateway_spend = 0.0
 
     async def run_session(session_prompt: str, session_resume: str | None, session_fork: bool = False) -> RunOutcome:
+        from engine.sandbox.box import AgentBox, SandboxUnavailable  # engine.sandbox imports engine.agent
+
+        async with contextlib.AsyncExitStack() as stack:
+            box: AgentBox | None = None
+            if boxed:
+                # The SDK's version probe would start a box of its own; the CLI version is pinned.
+                os.environ.setdefault("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+                try:
+                    box = await stack.enter_async_context(AgentBox(
+                        agent_dir=agent_dir, project_dir=project_dir, model=model,
+                        # The SDK caps the CLI's own loop; the gateway backstops anything else.
+                        claude_cap_usd=claude_cap * 1.5, cli_switches=cli_switches(),
+                        api_key=anthropic_api_key(_repo_root()), warn=ctx.warn))
+                except SandboxUnavailable as exc:
+                    raise JobFailed("agent_unavailable", f"The agent's box could not start: {exc}")
+                except AgentUnavailable as exc:
+                    raise JobFailed("agent_unavailable", str(exc))
+            return await run_boxed_session(session_prompt, session_resume, session_fork, box)
+
+    async def run_boxed_session(session_prompt: str, session_resume: str | None, session_fork: bool,
+                                box: AgentBox | None) -> RunOutcome:
+        nonlocal gateway_spend
         session = AgentSession(
             repo_root=_repo_root(),
             journal_path=agent_dir / "journal.jsonl",
@@ -356,10 +397,13 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             max_claude_usd=getattr(settings, "agent_max_claude_usd", None),
             resume=session_resume,
             fork=session_fork,
-            env_extra={job_ledger.LEDGER_DIR_ENV: str(agent_dir), "CLAUDE_CONFIG_DIR": str(session_home)},
+            env_extra=None if box else {job_ledger.LEDGER_DIR_ENV: str(agent_dir), "CLAUDE_CONFIG_DIR": str(session_home)},
             on_event=on_event,
             on_message=on_message,
             on_tool=on_tool,
+            cli_path=box.cli_path if box else None,
+            box_env=box.session_env() if box else None,
+            settings_json=box.settings_json if box else None,
         )
         run_task = asyncio.create_task(session.run(session_prompt))
         watch_task = asyncio.create_task(watch())
@@ -388,7 +432,10 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             run_task.cancel()
             watch_task.cancel()
             await asyncio.gather(run_task, watch_task, return_exceptions=True)
-            if stopped := _stop_leftovers(agent_dir):
+            if box is not None:
+                # The box's processes end with it; the gateway's meter covers all its Claude traffic.
+                gateway_spend += box.gateway.spend_usd if box.gateway else 0.0
+            elif stopped := _stop_leftovers(agent_dir):
                 ctx.log(f"stopped {stopped} processes the session left running")
             sync_ledger()
 
@@ -413,6 +460,12 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         # subtracts what its parent had paid for when it finished.
         meter.llm_exact = max(0.0, float(outcome.total_cost_usd) - claude_cost_baseline)
         _set_line(ctx, "claude agent", round(meter.llm_exact, 4), "anthropic", estimated=False)
+    if boxed and gateway_spend > (meter.llm_exact or 0.0) * 1.25 + 0.10:
+        # Claude traffic outside the agent loop's own accounting reached the gateway: bill what
+        # the gateway metered rather than the loop's lower figure.
+        ctx.warn(f"the Claude gateway metered ${gateway_spend:.2f} against the agent loop's "
+                 f"${meter.llm_exact or 0.0:.2f}; billing the metered figure")
+        _set_line(ctx, "claude agent", round(gateway_spend, 4), "anthropic", estimated=True)
     # What the tools recorded is the bill. The agent's own cost log is a cross-check, and the
     # fallback if the ledger stayed empty, so a broken ledger can't bill $0. A revision counts
     # only what it added to the shared project log.
@@ -492,6 +545,60 @@ async def run_video(ctx: JobContext) -> dict[str, Any]:
 
     async with ctx.resource("agent", "agent session"):
         return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=resume)
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def _session_claude_total(store: Any, job: Any) -> float:
+    """What the CLI has reported for the session up to the end of ``job``. A resumed or forked
+    session's total includes everything before it, so a run built on ``job`` subtracts this. A
+    finished job reported it; a stopped one did not, so its own Claude line is added to what the
+    session had cost before it."""
+    agent = (job.result or {}).get("agent") or {}
+    if isinstance(agent.get("cost_usd"), (int, float)):
+        return float(agent["cost_usd"])
+    own = sum(line.usd for line in job.cost.lines if line.provider == "anthropic")
+    parent = store.get(job.parent_job_id) if job.parent_job_id and job.kind != "video" else None
+    return own + (_session_claude_total(store, parent) if parent is not None else 0.0)
+
+
+async def run_resume(ctx: JobContext) -> dict[str, Any]:
+    """Continue a stopped job: the same project, the same agent session (forked, like a revision),
+    reusing everything it already made. Billed only for what this run adds."""
+    store = ctx.services.store if (ctx.services and ctx.services.store) else None
+    parent_id = ctx.job.request.get("parent_job_id")
+    parent = store.get(parent_id) if store else None
+    if parent is None or not parent.stopped:
+        raise JobFailed("parent_not_resumable", f"Job {parent_id!r} is gone or was not stopped")
+    parent_agent = ctx.store.job_dir(str(parent_id)) / "agent"
+    project_dir = Path(_read_text(parent_agent / "project_dir.txt") or (ctx.settings.projects_dir / str(parent_id)))
+    if not project_dir.is_dir():
+        raise JobFailed("parent_expired", "The stopped job's project directory is gone; submit a new video job instead")
+    own_session = _read_text(ctx.job_dir / "agent" / "session_id.txt")
+    parent_session = _read_text(parent_agent / "session_id.txt")
+    claude_baseline = 0.0
+    if own_session:  # the server restarted in the middle of this resume
+        prompt, resume, fork = _RESTARTED_PROMPT, own_session, False
+        claude_baseline = _session_claude_total(store, parent) if parent_session else 0.0
+    elif parent_session:
+        prompt, resume, fork = _RESUME_PROMPT, parent_session, True
+        claude_baseline = _session_claude_total(store, parent)
+    else:  # stopped before its session began: start the session it never had
+        prompt = _read_text(parent_agent / "brief.md")
+        if not prompt:
+            raise JobFailed("parent_not_resumable", "The stopped job never started its agent session; submit it again")
+        resume, fork = None, False
+    baseline = _cost_log_baseline(ctx, project_dir)
+    async with ctx.resource("agent", "agent session"):
+        # No exports baseline: a video the stopped run already exported is this video, and the
+        # newest export is the one returned.
+        return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=resume, fork=fork,
+                                    cost_log_baseline=baseline, claude_cost_baseline=claude_baseline)
 
 
 async def run_revise(ctx: JobContext) -> dict[str, Any]:

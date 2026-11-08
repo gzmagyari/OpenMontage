@@ -63,6 +63,7 @@ class Settings:
     agent_wall_time_minutes: float
     agent_max_claude_usd: float | None
     agent_concurrency: int
+    agent_sandbox: str = "required"
 
     @property
     def jobs_dir(self) -> Path:
@@ -99,6 +100,9 @@ def load_settings() -> Settings:
         # The agent-loop (Claude) spend cap per session; generation spend is capped by the brief.
         agent_max_claude_usd=_float("AGENT_MAX_CLAUDE_USD", 3.0),
         agent_concurrency=_int("AGENT_CONCURRENCY", 10),
+        # Every job's agent runs in its own box (engine/sandbox/). "required" fails a job that
+        # cannot get one; "off" runs the agent unboxed, for development hosts and tests only.
+        agent_sandbox=_str("OPENMONTAGE_AGENT_SANDBOX", "required").strip().lower(),
     )
 
 

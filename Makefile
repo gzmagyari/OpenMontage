@@ -147,4 +147,4 @@ docker-build:
 	docker build -f docker/Dockerfile -t openmontage-api .
 
 docker-run:
-	docker run --rm --init --shm-size=2g -p $(API_PORT):8080 --env-file .env -v openmontage-data:/data openmontage-api
+	docker run --rm --init --shm-size=2g -p $(API_PORT):8080 --env-file .env -v openmontage-data:/data \n	  --security-opt seccomp=docker/seccomp-openmontage.json --security-opt systempaths=unconfined openmontage-api

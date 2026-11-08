@@ -44,6 +44,7 @@ class JobManager:
         self._queue: deque[str] = deque()
         self._running: dict[str, asyncio.Task] = {}
         self._stopping = False
+        self._stop_requested: set[str] = set()  # running jobs being stopped (kept, resumable)
         self._cleanup_task: asyncio.Task | None = None
         self._flush_task: asyncio.Task | None = None
 
@@ -172,6 +173,56 @@ class JobManager:
             self._running[job_id].cancel()
         return job
 
+    def stop_job(self, job_id: str) -> Job | None:
+        """Stop a running job and keep it to resume: its project, its agent session and its cost
+        so far stay, and cleanup keeps it until it is resumed or deleted. A job that has not
+        started yet has nothing to keep, so it is simply cancelled."""
+        job = self.store.get(job_id)
+        if job is None or job.is_terminal:
+            return job
+        if job_id not in self._running:
+            return self.cancel(job_id)
+        self._stop_requested.add(job_id)
+        job.stage_detail = "stopping"
+        self.store.save(job, force=True)
+        self._running[job_id].cancel()
+        return job
+
+    def _cancelled(self, job: Job) -> None:
+        if job.id in self._stop_requested:
+            self._stop_requested.discard(job.id)
+            job.stopped = True
+            self._finish(job, JobStatus.CANCELLED, JobError(
+                code="stopped", message="Stopped by request; POST /v1/jobs/{id}/resume continues it", retryable=True))
+        else:
+            self._finish(job, JobStatus.CANCELLED, JobError(code="cancelled", message="Cancelled by request", retryable=True))
+
+    def purge(self, job_id: str) -> bool:
+        """Delete a finished job now, with its project and the finished jobs built on it (revisions,
+        resumes). Refused (False) while the job or one built on it is still active."""
+        job = self.store.get(job_id)
+        if job is None:
+            return True
+        family = self._descendants(job_id)
+        if not job.is_terminal or any(not member.is_terminal for member in family):
+            return False
+        for member in [*family, job]:
+            shutil.rmtree(self.settings.projects_dir / member.id, ignore_errors=True)
+            self.store.delete(member.id)
+        return True
+
+    def _descendants(self, job_id: str) -> list[Job]:
+        jobs = list(self.store.all())
+        found: list[Job] = []
+        frontier = [job_id]
+        while frontier:
+            parent = frontier.pop()
+            for job in jobs:
+                if job.parent_job_id == parent and job not in found:
+                    found.append(job)
+                    frontier.append(job.id)
+        return found
+
     def stats(self) -> dict[str, Any]:
         return {
             "running": len(self._running),
@@ -225,7 +276,7 @@ class JobManager:
                 job.stage_detail = "interrupted by shutdown; will resume"
                 self.store.save(job, force=True)
             elif task.cancelled():
-                self._finish(job, JobStatus.CANCELLED, JobError(code="cancelled", message="Cancelled by request", retryable=True))
+                self._cancelled(job)
             else:
                 exc = task.exception()
                 self._finish(job, JobStatus.FAILED, JobError(code="internal_error", message=f"{type(exc).__name__}: {exc}", retryable=True))
@@ -264,7 +315,7 @@ class JobManager:
                 job.stage_detail = "interrupted by shutdown; will resume"
                 self.store.save(job, force=True)
             else:
-                self._finish(job, JobStatus.CANCELLED, JobError(code="cancelled", message="Cancelled by request", retryable=True))
+                self._cancelled(job)
         except JobFailed as exc:
             ctx.log(f"FAILED {exc.code}: {exc.message}")
             self._finish(job, JobStatus.FAILED, JobError(code=exc.code, message=exc.message, retryable=exc.retryable))
@@ -291,13 +342,34 @@ class JobManager:
             await asyncio.sleep(900)
 
     def cleanup_expired(self) -> int:
+        """Delete finished jobs JOB_TTL_HOURS after they ended, and abandoned drafts. A stopped job
+        that was never resumed is kept until it is deleted, and a job stays while one built on it
+        (a revision or a resume working in its project) is still kept."""
         cutoff = utcnow() - timedelta(hours=self.settings.job_ttl_hours)
         draft_cutoff = utcnow() - timedelta(hours=self.settings.draft_ttl_hours)
+        jobs = list(self.store.all())
+        children: dict[str, list[Job]] = {}
+        for job in jobs:
+            if job.parent_job_id:
+                children.setdefault(job.parent_job_id, []).append(job)
+
+        def kept(job: Job, seen: frozenset[str] = frozenset()) -> bool:
+            if job.id in seen:
+                return False
+            if job.status == JobStatus.DRAFT:
+                return job.updated_at >= draft_cutoff
+            if not job.is_terminal:
+                return True
+            built_on = children.get(job.id, [])
+            if job.stopped and not any(child.kind == JobKind.RESUME for child in built_on):
+                return True
+            if job.finished_at is None or job.finished_at >= cutoff:
+                return True
+            return any(kept(child, seen | {job.id}) for child in built_on)
+
         removed = 0
-        for job in self.store.all():
-            expired_terminal = job.is_terminal and job.finished_at and job.finished_at < cutoff
-            abandoned_draft = job.status == JobStatus.DRAFT and job.updated_at < draft_cutoff
-            if expired_terminal or abandoned_draft:
+        for job in jobs:
+            if not kept(job):
                 shutil.rmtree(self.settings.projects_dir / job.id, ignore_errors=True)
                 self.store.delete(job.id)
                 removed += 1

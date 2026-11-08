@@ -75,6 +75,16 @@ class ReviseRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=200)
 
 
+class ResumeRequest(BaseModel):
+    """POST /v1/jobs/{id}/resume: continue a stopped job. ``options.max_budget_usd`` is this run's
+    own paid-generation budget (on top of what the stopped run already spent)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    options: VideoOptions | None = None
+    idempotency_key: str | None = Field(default=None, max_length=200)
+
+
 class BudgetUpdate(BaseModel):
     """POST /v1/jobs/{id}/budget: re-aim a queued or running job's paid-generation
     budget. Lowering it to the current spend makes the enforcement hook deny every

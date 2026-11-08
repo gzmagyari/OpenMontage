@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 
 from api.deps import base_url, ensure_assets_exist, error, require_token
-from api.schemas import BudgetUpdate, ReviseRequest, VideoPatch, VideoRequest
+from api.schemas import BudgetUpdate, ResumeRequest, ReviseRequest, VideoPatch, VideoRequest
 from engine.jobs import JobKind, JobStatus
 
 router = APIRouter(prefix="/v1", tags=["jobs"], dependencies=[Depends(require_token)])
@@ -187,10 +187,48 @@ async def set_budget(request: Request, job_id: str, body: BudgetUpdate):
 
 
 @router.delete("/jobs/{job_id}")
-async def cancel_job(request: Request, job_id: str):
-    _job_or_404(request, job_id)
+async def cancel_job(request: Request, job_id: str, purge: bool = Query(False)):
+    """Cancel a queued or running job. With ``purge=true``, delete a finished job now, with its
+    project and the finished jobs built on it (how a stopped job is discarded)."""
+    job = _job_or_404(request, job_id)
+    if purge:
+        if not request.app.state.manager.purge(job_id):
+            raise error(status.HTTP_409_CONFLICT, "still_active",
+                        f"Job {job_id!r} or a job built on it is still active; stop or cancel it first")
+        return {"id": job_id, "deleted": True}
     job = request.app.state.manager.cancel(job_id)
     return job.public(base_url(request))
+
+
+@router.post("/jobs/{job_id}/stop")
+async def stop_job(request: Request, job_id: str):
+    """Stop a running video job and keep it to resume: it ends ``cancelled`` with ``stopped: true``,
+    and its project, agent session and cost so far stay until it is resumed or purged. A job that
+    has not started yet is cancelled (there is nothing to keep)."""
+    job = _job_or_404(request, job_id)
+    if job.kind not in (JobKind.VIDEO, JobKind.REVISE, JobKind.RESUME):
+        raise error(status.HTTP_409_CONFLICT, "not_stoppable", "Only video jobs can be stopped")
+    job = request.app.state.manager.stop_job(job_id)
+    return job.public(base_url(request))
+
+
+@router.post("/jobs/{job_id}/resume", status_code=status.HTTP_202_ACCEPTED)
+async def resume_job(request: Request, job_id: str, body: ResumeRequest):
+    """Continue a stopped job in a new job (kind ``resume``): the same project and agent session,
+    reusing everything it already made. Poll the new job like any other."""
+    parent = _job_or_404(request, job_id)
+    if not parent.stopped or parent.status != JobStatus.CANCELLED:
+        raise error(status.HTTP_409_CONFLICT, "not_resumable", "Only a stopped job can be resumed")
+    for child in request.app.state.store.all():
+        if child.parent_job_id == job_id and child.kind == JobKind.RESUME and not child.is_terminal:
+            return JSONResponse(child.public(base_url(request)), status_code=200,
+                                headers={"Location": f"/v1/jobs/{child.id}"})
+    payload = {"parent_job_id": job_id,
+               "options": body.options.model_dump(exclude_unset=True) if body.options else None}
+    key = request.headers.get("idempotency-key") or body.idempotency_key
+    job, created = request.app.state.manager.submit(JobKind.RESUME, payload, idempotency_key=key, parent_job_id=job_id)
+    return JSONResponse(job.public(base_url(request)), status_code=202 if created else 200,
+                        headers={"Location": f"/v1/jobs/{job.id}"})
 
 
 @router.get("/jobs/{job_id}/files")

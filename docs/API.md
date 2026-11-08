@@ -8,7 +8,8 @@ OpenMontage's standard agent-driven pipelines (`AGENT_GUIDE.md`, `pipeline_defs/
 > **Status:** implemented and tested end to end. Each video job runs one unattended agent session
 > (Claude Agent SDK, `engine/agent/`) that follows the stock `AGENT_GUIDE.md` routing inside the
 > repo, works in `projects/<job_id>/`, and is journaled message by message - the poll response
-> returns that chat stream. Requires `ANTHROPIC_API_KEY`, `FAL_KEY`, and Node >= 18 on the host.
+> returns that chat stream. Requires `ANTHROPIC_API_KEY`, `FAL_KEY`, and Node >= 18 on the host,
+> and Linux with bubblewrap for the agent boxes (the Docker image has it; see "Agent boxes").
 
 ## Running
 
@@ -43,7 +44,9 @@ Configuration is env-driven (see `.env.example`): `FAL_KEY`, `ANTHROPIC_API_KEY`
 | `GET /v1/jobs/{id}` | Poll: status, stage, progress, cost, warnings, error, result, and the agent chat stream (`transcript.events`; page with `?transcript_offset=<next_offset>`, `transcript_limit=0` omits it). |
 | `GET /v1/jobs/{id}/files` / `/files/{name}` | List / download deliverables (the MP4s, `RUN_REPORT.md`, `journal.jsonl`, raw `transcript.jsonl`). |
 | `POST /v1/jobs/{id}/budget` | Re-aim a queued or RUNNING job's paid-generation budget (`{"max_budget_usd": N}`). The server holds the agent to it: every tool call checks it within seconds, and paid calls the remaining budget cannot cover are denied, so lowering it to the current spend makes the run stop buying and export the best cut. 409 `not_adjustable` on drafts (PATCH options instead) and terminal jobs. |
-| `DELETE /v1/jobs/{id}` | Cancel (queued or running). |
+| `DELETE /v1/jobs/{id}` | Cancel (queued or running). With `?purge=true`: delete a finished job now, with its project and the finished jobs built on it (409 `still_active` while one runs). |
+| `POST /v1/jobs/{id}/stop` | Stop a running video job and keep it: it ends `cancelled` with `stopped: true` and error code `stopped`, with its project, agent session and cost so far kept until it is resumed or purged (never expired). A job not started yet is just cancelled. |
+| `POST /v1/jobs/{id}/resume` | Continue a stopped job in a new job of kind `resume`: the same project and (forked) agent session, reusing everything it made. `options.max_budget_usd` is this run's own budget; its ledger holds only what it adds. 409 `not_resumable` unless the job was stopped; an active resume is returned instead of a second one. |
 | `POST /v1/jobs/{id}/revise` | Feedback on a completed video -> revision job: the agent session is *resumed* with the feedback, in the same project, reusing every asset that still fits. |
 | `POST /v1/assets` / `GET /v1/assets/{id}[/content]` | Upload once, reference by `asset_id` (de-duplicated by content). |
 | `GET /healthz`, `GET /readyz`, `GET /v1/capabilities`, `GET /v1/stats` | Health and introspection. |
@@ -67,7 +70,9 @@ however the agent invokes the tool (the agent is told to export what exists), wi
 (`budget_exhausted`, not retryable) if spend somehow passes 1.5x the budget. A session that ends without a
 video is resumed once before the job fails with `no_video`, and a revision must export a new file. `Idempotency-Key` (header or body) makes submits safe to retry.
 Interrupted jobs resume after a restart. Finished jobs expire after `JOB_TTL_HOURS`; drafts that
-are never started expire `DRAFT_TTL_HOURS` (default 24) after their last edit.
+are never started expire `DRAFT_TTL_HOURS` (default 24) after their last edit. A stopped job never
+expires until it is resumed or purged, and a job is kept while a revision or resume built on it is
+kept, so the project the newest run works in stays.
 
 ## Integrating (what a SaaS backend calls)
 
@@ -154,8 +159,46 @@ is kept per job, so a revision resumed after a restart keeps its own earlier ent
 
 ```bash
 make docker-build
-make docker-run           # --init --shm-size=2g, /data volume for jobs and uploads
+make docker-run           # --init --shm-size=2g, /data volume, and the two box options below
 ```
+
+Every video job's agent runs in its own box (see "Agent boxes" below), which needs two options on
+the container: `--security-opt seccomp=docker/seccomp-openmontage.json` (Docker's default profile
+refuses the namespace calls bubblewrap needs; this one allows them and still refuses the kernel
+administration calls nothing here uses) and `--security-opt systempaths=unconfined` (lets a box
+forbid nested boxes). Without them, video jobs fail with `agent_unavailable` instead of running
+unboxed. After a rebuild, run `python scripts/agent_box_check.py` in the container (no cost), then
+`scripts/agent_session_smoke.py` (about $0.01).
+
+## Agent boxes
+
+A video job's agent is driven by the customer's prompt, so it never runs next to the server. Each
+session's Claude CLI, and everything it starts, runs in a bubblewrap box (`engine/sandbox/`) that has:
+
+- the system and the repository read-only, the job's project folder and a private `/tmp` writable,
+  and nothing else of `/data`;
+- its own process list (the server's processes and environment are not visible) and no network of
+  its own;
+- an environment built from a list: no provider key, no API token. A provider key's name is set to
+  a placeholder so tools still see their provider as configured.
+
+It reaches the outside through three sockets the API serves for that job only:
+
+- **Claude gateway** (`gateway.py`): the CLI's `ANTHROPIC_BASE_URL`. The box holds a token valid for
+  this job while it runs; the gateway accepts only that token, only the Messages API, only the
+  job's models (`OPENMONTAGE_AGENT_MODEL` and small `claude-haiku-*` side models), meters usage and
+  stops at 1.5x `AGENT_MAX_CLAUDE_USD`, then adds the real key.
+- **Paid-tools desk** (`desk.py`): `BaseTool.execute` hands every call of a tool with runtime API or
+  HYBRID to the desk, which refuses input URLs that are not on the public internet, holds the call to
+  the budget, runs it in a short-lived provider box (the keys and the network, but only this project
+  and the agent box's `/tmp`), and writes the ledger in the job folder the box cannot see. Local
+  tools run in the agent box and are only noted, so the stage still follows what ran.
+- **Web proxy** (`webproxy.py`): the box's `HTTP(S)_PROXY`, for WebFetch and downloads. Public
+  addresses on ports 80 and 443 only, checked after the name resolves; a byte budget per job and a
+  `web.log` in the job folder.
+
+`OPENMONTAGE_AGENT_SANDBOX=required` is the image's setting; `off` runs the agent unboxed and is for
+development hosts and the test suite only.
 
 ## Design notes
 

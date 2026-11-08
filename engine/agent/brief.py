@@ -103,7 +103,8 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
   video possible without it instead of failing.
 - Do not modify repository code, do not run git commit/push, do not touch files outside this
   repository, the project directory below, and the reference files listed above.
-- Run tools with the repo venv (.venv/Scripts is already on PATH).
+- Run tools with `python`: its interpreter already has every dependency (there is no venv to look
+  for). The project directory below and /tmp are the only places you can write.
 - All project work goes in: {project}
 - When finished, write {project}/RUN_REPORT.md: what you produced, every paid call with its cost,
   the total spend, rough wall time per stage, problems you hit and how you solved them, and the

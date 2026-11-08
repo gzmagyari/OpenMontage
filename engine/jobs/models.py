@@ -33,6 +33,7 @@ TERMINAL_STATUSES = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
 class JobKind(str, Enum):
     VIDEO = "video"            # prompt + references -> finished video (agent-driven pipeline run)
     REVISE = "revise"          # previous job + feedback -> revised video (resumes the project)
+    RESUME = "resume"          # a stopped job -> the same video, continued from where it stopped
     TOOL_RUN = "tool_run"      # raw registry tool execution (internal API)
 
 
@@ -75,6 +76,9 @@ class Job(BaseModel):
     result: dict[str, Any] | None = None
     warnings: list[str] = Field(default_factory=list)
     attempts: int = 0
+    # Ended by POST /v1/jobs/{id}/stop: cancelled, with its project and agent session kept until it
+    # is resumed (POST /v1/jobs/{id}/resume) or deleted (DELETE /v1/jobs/{id}?purge=true).
+    stopped: bool = False
 
     @property
     def is_terminal(self) -> bool:

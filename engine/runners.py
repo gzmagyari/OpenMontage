@@ -113,9 +113,10 @@ async def run_tool(ctx: JobContext) -> dict[str, Any]:
 
 
 def build_runners() -> dict[JobKind, Any]:
-    from engine.agent import run_revise, run_video
+    from engine.agent import run_resume, run_revise, run_video
 
-    return {JobKind.TOOL_RUN: run_tool, JobKind.VIDEO: run_video, JobKind.REVISE: run_revise}
+    return {JobKind.TOOL_RUN: run_tool, JobKind.VIDEO: run_video, JobKind.REVISE: run_revise,
+            JobKind.RESUME: run_resume}
 
 
 __all__ = ["build_runners", "run_tool"]

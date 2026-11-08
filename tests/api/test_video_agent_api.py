@@ -306,6 +306,26 @@ async def test_agent_failure_fails_the_job(agent_client, fake_sdk):
     assert any(line["item"] == "claude agent" for line in data["cost"]["lines"])
 
 
+async def test_a_job_that_cannot_get_a_box_fails_instead_of_running_unboxed(settings, fake_sdk, monkeypatch):
+    import dataclasses
+
+    import httpx
+
+    from engine.sandbox import box as sandbox_box
+
+    monkeypatch.setattr(sandbox_box, "sandbox_problem", lambda: "bubblewrap is not installed")
+    app = create_app(settings=dataclasses.replace(settings, agent_sandbox="required", agent_wall_time_minutes=0.05))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test",
+                                     headers={"Authorization": "Bearer test-token"}) as client:
+            response = await client.post("/v1/videos", json={"prompt": "a video that needs a box"})
+            data = await _wait_terminal(client, response.json()["id"])
+    assert data["status"] == "failed"
+    assert data["error"]["code"] == "agent_unavailable"
+    assert "bubblewrap is not installed" in data["error"]["message"]
+    assert not any(line["item"] == "claude agent" for line in data["cost"]["lines"])  # no session ran
+
+
 async def test_auth_mismatch_fails_closed(agent_client, fake_sdk):
     fake_sdk.api_key_source = "none"
     response = await agent_client.post("/v1/videos", json={"prompt": "auth probe video"})
@@ -341,6 +361,76 @@ async def test_revise_resumes_the_parent_session(agent_client, fake_sdk):
         "the revision finds the parent's session"
     assert "Make the hook text bigger" in fake_sdk.calls[1]["prompt"]
     assert data["result"]["video"]["name"] == "video_rev2.mp4"  # the NEW export wins
+
+
+async def _stop_after_the_paid_calls(client, fake_sdk, prompt="a video to stop"):
+    fake_sdk.delay = 30  # the session waits after its two paid calls, before exporting
+    created = await client.post("/v1/videos", json={"prompt": prompt})
+    job_id = created.json()["id"]
+    async with asyncio.timeout(10):
+        while (await client.get(f"/v1/jobs/{job_id}")).json()["cost"]["spent_usd"] < 0.9:
+            await asyncio.sleep(0.02)
+    stopping = await client.post(f"/v1/jobs/{job_id}/stop")
+    assert stopping.status_code == 200, stopping.text
+    fake_sdk.delay = 0
+    return await _wait_terminal(client, job_id)
+
+
+async def test_a_stopped_job_keeps_its_work_and_its_cost(agent_client, fake_sdk):
+    data = await _stop_after_the_paid_calls(agent_client, fake_sdk)
+    assert data["status"] == "cancelled" and data["stopped"] is True
+    assert data["error"]["code"] == "stopped"
+    assert data["cost"]["spent_usd"] >= 0.9, "the work done before the stop stays on the bill"
+    project = agent_session.Path(_project_dir(fake_sdk.calls[0]["prompt"]))
+    assert project.is_dir()
+
+
+async def test_resuming_continues_the_stopped_session_in_its_project(agent_client, fake_sdk):
+    stopped = await _stop_after_the_paid_calls(agent_client, fake_sdk)
+    resumed = await agent_client.post(f"/v1/jobs/{stopped['id']}/resume", json={"options": {"max_budget_usd": 2}})
+    assert resumed.status_code == 202, resumed.text
+    data = await _wait_terminal(agent_client, resumed.json()["id"])
+    assert data["status"] == "completed", data.get("error")
+    assert data["kind"] == "resume" and data["parent_job_id"] == stopped["id"]
+    options = fake_sdk.calls[-1]["options"]
+    assert options.resume == "sess-1" and options.fork_session is True
+    assert "stopped this run" in fake_sdk.calls[-1]["prompt"]
+    assert data["result"]["video"]["name"] == "video_rev2.mp4"
+    # The resume bills its own run only: the stopped job's paid calls are not counted again.
+    assert all(line["item"] != "fal_elevenlabs_tts eleven-v3 (vo.mp3)" or line["usd"] == 0.02
+               for line in data["cost"]["lines"])
+    again = await agent_client.post(f"/v1/jobs/{data['id']}/resume", json={})
+    assert again.status_code == 409 and again.json()["error"]["code"] == "not_resumable"
+
+
+async def test_only_a_stopped_job_can_be_resumed(agent_client, fake_sdk):
+    created = await agent_client.post("/v1/videos", json={"prompt": "a finished video"})
+    finished = await _wait_terminal(agent_client, created.json()["id"])
+    refused = await agent_client.post(f"/v1/jobs/{finished['id']}/resume", json={})
+    assert refused.status_code == 409 and refused.json()["error"]["code"] == "not_resumable"
+
+
+async def test_a_stopped_job_is_kept_until_it_is_resumed_or_purged(agent_client, fake_sdk):
+    from datetime import timedelta
+
+    from engine.jobs.models import utcnow
+
+    stopped = await _stop_after_the_paid_calls(agent_client, fake_sdk)
+    created = await agent_client.post("/v1/videos", json={"prompt": "an old finished video"})
+    old = await _wait_terminal(agent_client, created.json()["id"])
+    app = agent_client.app
+    for job_id in (stopped["id"], old["id"]):
+        job = app.state.store.get(job_id)
+        job.finished_at = utcnow() - timedelta(days=30)
+        app.state.store.save(job, force=True)
+    app.state.manager.cleanup_expired()
+    assert app.state.store.get(stopped["id"]) is not None, "a stopped job waits for its resume"
+    assert app.state.store.get(old["id"]) is None, "a finished job still expires"
+
+    purged = await agent_client.delete(f"/v1/jobs/{stopped['id']}?purge=true")
+    assert purged.status_code == 200 and purged.json() == {"id": stopped["id"], "deleted": True}
+    assert (await agent_client.get(f"/v1/jobs/{stopped['id']}")).status_code == 404
+    assert not agent_session.Path(_project_dir(fake_sdk.calls[0]["prompt"])).exists()
 
 
 async def test_revise_ledger_counts_only_the_revisions_own_spend(settings, monkeypatch):

@@ -322,6 +322,64 @@ def _budget_execute(fn: Callable) -> Callable:
     return wrapper
 
 
+def _result_from_desk(answer: Any) -> "ToolResult":
+    if not isinstance(answer, dict):
+        return ToolResult(success=False, error="the paid-tools desk sent no result")
+    fields = {name: answer[name] for name in ToolResult.__dataclass_fields__ if name in answer}
+    fields.setdefault("success", False)
+    return ToolResult(**fields)
+
+
+def _desk_execute(fn: Callable) -> Callable:
+    """Inside an agent box, run paid tools at the job's desk (engine/sandbox/desk.py).
+
+    The box holds no provider key and has no network of its own. A tool that needs either
+    (runtime API or HYBRID) is handed whole to the desk, which checks the budget, runs it
+    with the keys in a box that sees only this job's project, and records the cost. A local
+    tool runs here as usual and is only noted, so the job's stage follows what ran. Outside
+    a box (OPENMONTAGE_TOOL_DESK unset) nothing changes.
+    """
+    if getattr(fn, "_desk_routed", False):
+        return fn
+
+    @functools.wraps(fn)
+    def wrapper(self, inputs: Any, *args: Any, **kwargs: Any):
+        try:
+            from engine.sandbox import client as desk
+        except Exception:
+            return fn(self, inputs, *args, **kwargs)
+        if not desk.desk_socket():
+            return fn(self, inputs, *args, **kwargs)
+        name = getattr(self, "name", "") or self.__class__.__name__
+        if self.runtime in (ToolRuntime.API, ToolRuntime.HYBRID):
+            try:
+                answer = desk.request({"op": "run", "tool": name, "inputs": inputs, "cwd": os.getcwd()})
+            except Exception as exc:
+                return ToolResult(success=False, error=f"the paid-tools desk did not answer: {exc}")
+            return _result_from_desk(answer)
+        note = {"op": "note", "tool": name, "provider": getattr(self, "provider", None),
+                "id": f"{os.getpid()}-{id(inputs)}-{time.monotonic_ns()}",
+                "inputs": {k: inputs.get(k) for k in ("model", "model_id", "output_path")} if isinstance(inputs, dict) else {}}
+
+        def tell(event: str, **extra: Any) -> None:
+            try:
+                desk.request({**note, "event": event, **extra}, timeout=10)
+            except Exception:
+                pass
+
+        tell("start")
+        success = False
+        try:
+            result = fn(self, inputs, *args, **kwargs)
+            success = bool(getattr(result, "success", False))
+            return result
+        finally:
+            tell("finish", success=success)
+
+    wrapper._desk_routed = True  # type: ignore[attr-defined]
+    return wrapper
+
+
 _FILE_HASH_CHUNK = 1024 * 1024
 
 
@@ -494,10 +552,11 @@ class BaseTool(ABC):
         super().__init_subclass__(**kwargs)
         impl = cls.__dict__.get("execute")
         if impl is not None and not getattr(impl, "__isabstractmethod__", False):
-            # Cache is outermost: a hit is free, so it skips the budget, the live
-            # call and its event emission. Instrumentation wraps the raw
+            # Inside an agent box, the desk layer hands paid calls to the job's desk before
+            # anything else runs. Then the cache: a hit is free, so it skips the budget, the
+            # live call and its event emission. Instrumentation wraps the raw
             # implementation beneath them.
-            cls.execute = _cache_execute(_budget_execute(_instrument_execute(impl)))
+            cls.execute = _desk_execute(_cache_execute(_budget_execute(_instrument_execute(impl))))
 
     # --- Identity (override in subclasses) ---
     name: str = ""
