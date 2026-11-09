@@ -152,14 +152,18 @@ class FalMedia(BaseTool):
         return round(rate * seconds, 4)
 
     def _output_cost(self, endpoint, output, inputs):
-        """What fal bills for a priced route: its rate times the delivered clip's length."""
+        """What fal bills for a priced route: its rate times the delivered clip's length.
+        Billing events show fal rounds UP to whole seconds (2026-11-09), so the estimate
+        does too - never under a real charge by a fraction."""
+        import math
+
         rate = self.unit_prices.get(endpoint)
         if rate is None:
             return None
         from tools.analysis.audio_probe import probe_duration
 
         seconds = probe_duration(output) or self._requested_seconds(inputs, endpoint)
-        return round(rate * seconds, 4)
+        return round(rate * math.ceil(float(seconds)), 4)
 
     def _route(self, inputs):
         model = inputs.get("model", next(iter(self.routes)))
@@ -349,6 +353,7 @@ class FalMedia(BaseTool):
                     "output": outputs[0],
                     "outputs": outputs,
                     "resume_job": job,
+                    "request_ids": [job["request_id"]] if job.get("request_id") else [],
                     "cost_status": "priced" if cost is not None else "unquoted",
                     "provider_result": result,
                 },

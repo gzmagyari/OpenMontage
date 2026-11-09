@@ -85,6 +85,10 @@ class CostItem:
     item: str
     usd: float
     provider: str | None = None
+    # Provider-side request ids (fal), so settlement can replace the estimate with what the
+    # provider's billing events really charged; () = not reconcilable, stays an estimate.
+    request_ids: tuple[str, ...] = ()
+    estimated: bool = True
 
 
 @dataclass
@@ -144,7 +148,9 @@ def summarize(entries: list[dict[str, Any]]) -> LedgerState:
             open_calls.pop(str(entry.get("id")), None)
             cost = _usd(entry.get("cost_usd"))
             if cost:
-                state.items.append(CostItem(_label(entry), round(cost, 4), entry.get("provider")))
+                rids = entry.get("request_ids")
+                rids = tuple(str(r) for r in rids if r) if isinstance(rids, list) else ()
+                state.items.append(CostItem(_label(entry), round(cost, 4), entry.get("provider"), rids))
             if entry.get("success"):
                 for call_id, started in list(open_calls.items()):
                     if _same_output(started, entry):
@@ -207,10 +213,16 @@ def begin_call(directory: Path, *, tool: str, provider: str | None, inputs: Any,
     return call
 
 
-def finish_call(directory: Path, call: ToolCall, *, cost_usd: Any, success: Any) -> None:
+def finish_call(directory: Path, call: ToolCall, *, cost_usd: Any, success: Any,
+                request_ids: Any = None) -> None:
     """Record what the call really cost. A successful call that reports no cost is recorded at its
-    quote: a paid call is never free."""
+    quote: a paid call is never free. ``request_ids`` are the provider's ids for this call's
+    submissions, kept so settlement can reconcile the estimate against real billing events."""
     entry = {"event": "finish", "id": call.id, **call.details, "cost_usd": _usd(cost_usd), "success": bool(success)}
+    if isinstance(request_ids, (list, tuple)):
+        rids = [str(r) for r in request_ids if r]
+        if rids:
+            entry["request_ids"] = rids
     if cost_usd is None and success and _usd(call.estimate_usd):
         entry.update(cost_usd=_usd(call.estimate_usd), cost_source="quote")
     _append(directory, entry)

@@ -267,7 +267,8 @@ def test_the_real_avatar_tool_called_the_way_the_agent_calls_it_is_denied(tmp_pa
     assert "PAID-GENERATION BUDGET REACHED" in stdout and "fal_avatar" in stdout
     state = state_of(directory)
     assert state.spent_usd == 0.0
-    assert state.denials[0]["tool"] == "fal_avatar" and state.denials[0]["estimate_usd"] == pytest.approx(0.85)
+    assert state.denials[0]["tool"] == "fal_avatar" and state.denials[0]["estimate_usd"] == pytest.approx(2.56)  # (0.056 plate + 0.20 sync)/s x 10s,
+    # the real billed rates (billing events 2026-11-09); was 0.85 on the stale table
     assert not Path(output).exists()
 
 

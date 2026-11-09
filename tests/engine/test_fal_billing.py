@@ -1,0 +1,100 @@
+"""Billing truth: real rates, request-id plumbing, and settlement reconciliation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from lib import fal_billing, job_ledger
+from lib.job_ledger import CostItem
+
+
+# -- the measured rates (fal billing events, 2026-11-09) --------------------------------
+
+def test_the_avatar_composite_prices_at_the_real_billed_rates():
+    from tools.avatar.fal_avatar import FalAvatar
+
+    tool = FalAvatar()
+    # 5.1s audio bills as 6 whole seconds: plate $0.056/s + lip-sync $0.20/s at 768P.
+    assert tool.estimate_cost({"audio_duration_seconds": 5.1,
+                               "image_url": "http://x/p.png", "audio_url": "http://x/a.mp3"}) == round(6 * 0.256, 4)
+    # 480P keeps the pricing API's base plate rate.
+    assert tool.estimate_cost({"audio_duration_seconds": 5.1, "resolution": "480P",
+                               "image_url": "http://x/p.png", "audio_url": "http://x/a.mp3"}) == round(6 * 0.235, 4)
+    # Lip-sync fix mode is the sync pass alone: $0.20/s.
+    assert tool.estimate_cost({"audio_duration_seconds": 9.2,
+                               "video_url": "http://x/v.mp4", "audio_url": "http://x/a.mp3"}) == round(10 * 0.20, 4)
+
+
+def test_h3_video_applies_the_768p_multiplier_and_rounds_up():
+    from tools.video.h3_max_video import H3MaxVideo
+
+    tool = H3MaxVideo()
+    ep = "minimax/h3-max/image-to-video"
+    assert tool._billed_rate(ep, {"resolution": "768P"}) == round(0.035 * 1.6, 4)
+    assert tool._billed_rate(ep, {"resolution": "480P"}) == 0.035
+    assert tool._billed_rate(ep, {}) == round(0.035 * 1.6, 4)  # hi-res is the default
+    # Output cost: a 5.18s file bills as 6 whole seconds at the billed rate.
+    assert tool._output_cost(ep, "/nonexistent.mp4", {"duration": 5.18}) == round(6 * 0.056, 4)
+
+
+# -- request ids through the ledger ------------------------------------------------------
+
+def test_finish_call_records_request_ids_and_summarize_returns_them(tmp_path: Path):
+    call = job_ledger.begin_call(tmp_path, tool="fal_avatar", provider="fal.ai",
+                                 inputs={"output_path": str(tmp_path / "take.mp4")},
+                                 estimate_usd=1.0)
+    job_ledger.finish_call(tmp_path, call, cost_usd=1.536, success=True,
+                           request_ids=["rid-plate", "rid-sync", None])
+    state = job_ledger.summarize(job_ledger.read_entries(tmp_path))
+    assert len(state.items) == 1
+    assert state.items[0].request_ids == ("rid-plate", "rid-sync")
+    assert state.items[0].estimated is True
+
+
+# -- reconciliation ----------------------------------------------------------------------
+
+def test_reconcile_replaces_fully_matched_items_with_actuals():
+    items = [
+        CostItem("take_A", 0.51, "fal.ai", ("p1", "s1")),   # the old 2.4x-under estimate
+        CostItem("broll", 0.1814, "fal.ai", ("b1",)),
+        CostItem("music", 0.60, "fal.ai", ()),              # no ids: stays an estimate
+        CostItem("take_B", 1.536, "fal.ai", ("p2", "s2")),  # s2 unbilled: stays an estimate
+    ]
+    events = {"p1": 0.336, "s1": 1.20, "b1": 0.336, "p2": 0.336}
+    out, stats = fal_billing.reconcile(items, events)
+    assert [i.usd for i in out] == [1.536, 0.336, 0.60, 1.536]
+    assert [i.estimated for i in out] == [False, False, True, True]
+    assert stats["matched"] == 2 and stats["unmatched"] == 1 and stats["no_ids"] == 1
+    # Drift is actual minus estimate over the matched items only.
+    assert stats["estimated_usd"] == round(0.51 + 0.1814, 4)
+    assert stats["actual_usd"] == round(1.536 + 0.336, 4)
+    assert stats["drift_usd"] == round((1.536 - 0.51) + (0.336 - 0.1814), 4)
+
+
+def test_reconciled_items_flow_into_cost_lines_with_estimated_false():
+    from engine.agent.runner import _set_generation_lines
+
+    class _Cost:
+        def __init__(self):
+            self.lines = []
+            self.spent_usd = 0.0
+
+    class _Job:
+        def __init__(self):
+            self.cost = _Cost()
+
+    class _Store:
+        def save(self, job):
+            pass
+
+    class _Ctx:
+        def __init__(self):
+            self.job = _Job()
+            self.store = _Store()
+
+    ctx = _Ctx()
+    _set_generation_lines(ctx, [CostItem("take_A", 1.536, "fal.ai", ("p1",), estimated=False),
+                                CostItem("music", 0.60, "fal.ai", ())])
+    flags = {line.item: line.estimated for line in ctx.job.cost.lines}
+    assert flags == {"take_A": False, "music": True}
+    assert ctx.job.cost.spent_usd == round(1.536 + 0.60, 4)

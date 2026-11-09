@@ -104,10 +104,15 @@ class FalAvatar(BaseTool):
         "omnihuman-1.5": ("fal-ai/bytedance/omnihuman/v1.5", 0.16),
     }
     COMPOSITE = "h3max-acting"
-    _PLATE_ENDPOINT = "minimax/h3-max/image-to-video"          # $0.035/s
-    _SYNC_ENDPOINT = "minimax/h3-max/lip-sync/video-to-video"  # $0.05/s
-    _PLATE_PER_S = 0.035
-    _SYNC_PER_S = 0.05
+    # Real billed rates from fal billing events, 2026-11-09 (the pricing API misleads here:
+    # lip-sync lists "$0.05 per unit" where a unit is 0.25s -> $0.20/s, and image-to-video
+    # lists the $0.035 480P base while 768P bills 1.6x -> $0.056/s). Fal rounds output
+    # seconds UP. Settlement reconciles against billing events either way (lib/fal_billing).
+    _PLATE_ENDPOINT = "minimax/h3-max/image-to-video"          # $0.056/s at 768P, $0.035 at 480P
+    _SYNC_ENDPOINT = "minimax/h3-max/lip-sync/video-to-video"  # $0.05 per 0.25s unit = $0.20/s
+    _PLATE_PER_S_480 = 0.035
+    _PLATE_PER_S = 0.056
+    _SYNC_PER_S = 0.20
     _POLL_INTERVAL_SECONDS = 5
     _MAX_WAIT_SECONDS = 1200
     _MIN_AUDIO_PEAK = 0.005  # below this the track is treated as silent and refused
@@ -138,7 +143,7 @@ class FalAvatar(BaseTool):
                 "default": "h3max-acting",
                 "enum": ["h3max-acting", "kling-v2-standard", "kling-v2-pro", "veed-fabric-1.0", "omnihuman-1.5"],
                 "description": "h3max-acting = prompted acting + accurate lips (H3 Max plate conditioned on the audio, "
-                               "then an H3 Max lip-sync pass; ~$0.085/s, ~2 min). Single-pass avatars: "
+                               "then an H3 Max lip-sync pass; ~$0.26/s at 768P, ~2 min). Single-pass avatars: "
                                "kling-v2-standard $0.0562/s, veed-fabric-1.0 $0.08/s, kling-v2-pro $0.115/s, "
                                "omnihuman-1.5 $0.16/s",
             },
@@ -265,7 +270,13 @@ class FalAvatar(BaseTool):
             return self._probe_duration(audio_path)
         return None
 
+    def _plate_rate(self, inputs: dict[str, Any]) -> float:
+        return self._PLATE_PER_S_480 if str(inputs.get("resolution") or "768P").upper() == "480P" \
+            else self._PLATE_PER_S
+
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
+        import math
+
         seconds = self._audio_seconds(inputs)
         if seconds is None:
             raise PriceQuoteRequired(
@@ -276,12 +287,13 @@ class FalAvatar(BaseTool):
         else:
             model = inputs.get("model") or self.COMPOSITE
             if model == self.COMPOSITE:
-                per_second = self._PLATE_PER_S + self._SYNC_PER_S
+                per_second = self._plate_rate(inputs) + self._SYNC_PER_S
             elif model in self._MODELS:
                 per_second = self._MODELS[model][1]
             else:
                 raise ValueError(f"model must be one of: {self.COMPOSITE}, {', '.join(self._MODELS)}")
-        return round(per_second * seconds, 4)
+        # Fal bills whole output seconds, rounded up (billing events, 2026-11-09).
+        return round(per_second * math.ceil(float(seconds)), 4)
 
     @staticmethod
     def _upload(path: Path, api_key: str) -> str:
@@ -318,6 +330,8 @@ class FalAvatar(BaseTool):
         submitted = response.json()
         job.update({key: submitted[key] for key in ("status_url", "response_url")})
         job["request_id"] = submitted.get("request_id")
+        if submitted.get("request_id"):  # every submission's id, for billing reconciliation
+            job.setdefault("request_ids", []).append(str(submitted["request_id"]))
 
     def _await_result(self, job: dict, api_key: str) -> dict:
         """Poll a submitted fal queue request to completion and return its result JSON."""
@@ -436,7 +450,8 @@ class FalAvatar(BaseTool):
             )
         probe = probe_output(output_path)
         billed_seconds = result_data.get("duration") or probe.get("duration_seconds") or job.get("audio_seconds")
-        cost = round(job["per_second_usd"] * float(billed_seconds), 4) if billed_seconds else None
+        # Fal bills whole output seconds, rounded up (billing events, 2026-11-09).
+        cost = round(job["per_second_usd"] * math.ceil(float(billed_seconds)), 4) if billed_seconds else None
         data = {
             "provider": self.provider,
             "model": job["model"],
@@ -444,6 +459,7 @@ class FalAvatar(BaseTool):
             "output": str(output_path),
             "video_url": result_data["video"].get("url"),
             "resume_job": job,
+            "request_ids": [str(r) for r in job.get("request_ids") or [] if r],
             "cost_status": "unquoted" if cost is None else "estimated",
             **probe,
         }
@@ -520,7 +536,7 @@ class FalAvatar(BaseTool):
                 plate_result = self._await_result(job, api_key)
                 job["plate_video_url"] = plate_result["video"]["url"]
                 plate_secs = float(plate_result.get("duration") or job["audio_seconds"])
-                job["costs"]["plate"] = round(self._PLATE_PER_S * plate_secs, 4)
+                job["costs"]["plate"] = round(self._plate_rate(inputs) * math.ceil(float(plate_secs)), 4)
                 job.pop("status_url", None)
                 job.pop("response_url", None)
                 save_job(inputs.get("job_path"), job)
@@ -538,7 +554,7 @@ class FalAvatar(BaseTool):
                 sync_result = self._await_result(job, api_key)
                 job["sync_video_url"] = sync_result["video"]["url"]
                 sync_secs = float(sync_result.get("duration") or job["audio_seconds"])
-                job["costs"]["sync"] = round(self._SYNC_PER_S * sync_secs, 4)
+                job["costs"]["sync"] = round(self._SYNC_PER_S * math.ceil(float(sync_secs)), 4)
                 save_job(inputs.get("job_path"), job)
 
             # 4) download + re-mux the verbatim audio + gate the delivered file -------------
@@ -579,6 +595,7 @@ class FalAvatar(BaseTool):
             "video_url": job.get("sync_video_url"),
             "cost_breakdown": job["costs"],
             "resume_job": {k: v for k, v in job.items() if k != "audio_local"},
+            "request_ids": [str(r) for r in job.get("request_ids") or [] if r],
             "cost_status": "unquoted" if cost is None else "estimated",
             **probe,
         }

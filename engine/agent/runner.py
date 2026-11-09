@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -25,7 +26,9 @@ from engine.agent.session import (AgentAuthError, AgentSession, AgentUnavailable
                                   anthropic_api_key, cli_switches)
 from engine.jobs.context import JobContext, JobFailed
 from engine.jobs.models import CostLine
-from lib import job_ledger
+from lib import fal_billing, job_ledger
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # imported where it is used: engine.sandbox imports engine.agent
     from engine.sandbox.box import AgentBox
@@ -271,7 +274,8 @@ def _set_generation_lines(ctx: JobContext, items: list[job_ledger.CostItem]) -> 
     """Replace the job's paid-generation lines with what the tool ledger says now. Rebuilt whole
     each time, so a restart resuming the run can't count a call twice."""
     lines = [line for line in ctx.job.cost.lines if line.provider == "anthropic"]
-    lines += [CostLine(item=item.item, usd=item.usd, provider=item.provider, estimated=True) for item in items]
+    lines += [CostLine(item=item.item, usd=item.usd, provider=item.provider, estimated=item.estimated)
+              for item in items]
     ctx.job.cost.lines = lines
     ctx.job.cost.spent_usd = round(sum(line.usd for line in lines), 4)
     ctx.store.save(ctx.job)
@@ -590,6 +594,35 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     elif log_entries and abs(log_total - ledger.spent_usd) > _COST_LOG_TOLERANCE_USD:
         ctx.warn(f"the agent's cost log (${log_total:.2f}) differs from the tools' recorded spend "
                  f"(${ledger.spent_usd:.2f}); billing the recorded spend")
+
+    # Fal actuals: before the job settles, replace estimates with what fal REALLY billed, so
+    # the customer's margin applies to real costs (the 2026-11-09 audit found estimates 2.4x
+    # under). Strictly by our request ids - the fal account is shared with live products.
+    # Best-effort: any failure keeps the estimates and says so, never fails the job.
+    fal_key = fal_billing.admin_key()
+    reconcilable = [item for item in ledger.items if item.request_ids]
+    if fal_key and reconcilable:
+        try:
+            ids = [rid for item in reconcilable for rid in item.request_ids]
+            since = ctx.job.created_at.replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
+            events = await asyncio.wait_for(
+                asyncio.to_thread(fal_billing.fetch_events, ids, since, fal_key), timeout=45)
+            items, stats = fal_billing.reconcile(ledger.items, events)
+            if stats["matched"]:
+                _set_generation_lines(ctx, items)
+                log.info("fal actuals reconciled: %d/%d items, estimated $%.4f -> billed $%.4f "
+                         "(drift $%+.4f); %d without ids stay estimates",
+                         stats["matched"], stats["matched"] + stats["unmatched"],
+                         stats["estimated_usd"], stats["actual_usd"], stats["drift_usd"],
+                         stats["no_ids"])
+            if stats["unmatched"]:
+                ctx.warn(f"{stats['unmatched']} paid items had no fal billing event yet; "
+                         "they are billed at their estimates")
+        except Exception:
+            log.exception("fal billing-events reconciliation failed")
+            ctx.warn("fal actuals unavailable; billing estimated provider costs")
+    elif reconcilable and not fal_key:
+        ctx.warn("OPENMONTAGE_FAL_ADMIN_KEY is not set; provider costs stay estimates")
 
     if not outcome.succeeded:
         detail = outcome.result_text or outcome.final_text or outcome.subtype or "unknown agent error"
