@@ -345,7 +345,9 @@ stays yours); paid generation calls; decision-log judgment entries; the final re
 and settlement; anything whose brief you cannot make fully self-contained.
 
 **Rules:** foreground only - never run a subagent in the background; at most 3 at
-once; every brief names its exact input paths, output paths and the check that proves
+once; every brief names its exact input and output paths ABSOLUTE under the project
+directory (subagents inherit the session's repo-root cwd, which is read-only in the
+box - a relative path silently lands outside the project) plus the check that proves
 completion; verify each subagent's result yourself before building on it.
 
 ## Mandatory Preflight

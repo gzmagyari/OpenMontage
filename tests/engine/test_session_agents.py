@@ -32,6 +32,7 @@ def test_the_composer_is_a_creative_coauthor_on_its_own_model():
     assert "never call paid" in low
     assert "never a generic template" in low            # creative code, not a pipeline
     assert "composition/src" in agent.prompt
+    assert "absolute project path" in low               # probe finding: /app cwd is read-only
 
 
 def test_the_session_takes_the_composer_model_knob():
