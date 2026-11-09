@@ -274,7 +274,32 @@ Reference: [`docs/API.md`](docs/API.md).
 - Run locally: `uvicorn api.main:app --port 8080 --workers 1` (one worker per process, by design).
 - Tests: `pytest tests/api tests/engine` (no network).
 
+## Latency Rules (Binding)
+
+Wall-clock time is a product feature: headless jobs are billed and judged by it.
+
+1. **Independent paid generations run concurrently in ONE Bash call.** The harness
+   executes tool calls sequentially even when you issue several in one message, so the
+   parallelism must live inside the call: ThreadPoolExecutor (or `&` + `wait`) over the
+   submissions, one result JSON per item. The binding pattern is in
+   `skills/pipelines/avatar-spokesperson/asset-director.md` -> "Parallel Generation
+   (Binding)"; it applies to every pipeline's independent batches (presenter takes,
+   b-roll motions, scene stills).
+2. **Batch independent commands.** Several quick, independent checks belong in one Bash
+   call with labeled output - every extra turn costs a thinking gap.
+3. **Fold bookkeeping into the producing call.** cost_log appends and `in_progress`
+   partial progress ride in the same Bash call that generated the item
+   (checkpoint-protocol -> "Boxed-Job Efficiency"); never spend a turn on them.
+4. **Read preloaded context instead of re-deriving it.** The preflight writes
+   `work/provider_menu.json` (below), and the end of this guide preloads the small
+   always-used skills verbatim - do not spend turns re-reading their source files.
+
 ## Mandatory Preflight
+
+In a headless job the box writes the provider rollup to **`work/provider_menu.json`**
+in the project directory at job start. **Read that file first** (fold the `cat` into
+your first Bash call); run `provider_menu_summary()` yourself only if the file is
+missing - and if a later tool call contradicts it, trust the live registry and say so.
 
 Do this before any creative work. **Use `provider_menu_summary()` first — it's the human-ready rollup.** The raw `support_envelope()` dump is a firehose (megabytes of JSON on a well-configured machine); pasting it into chat will bury the user.
 
@@ -732,3 +757,446 @@ The `.agents/skills/` directory is large. When you're not coming in through a to
 - Do not present a single unavailable tool in isolation. Always show the full capability picture: "X of Y providers configured for this capability."
 - Do not skip the Provider Menu at preflight. The user must see what they have AND what they could unlock.
 - Do not change provider, model, or render path without telling the user first and getting approval when the change is material.
+
+## Preloaded Skill Digests (Read Here, Not Mid-Run)
+
+The three small always-used skills below are preloaded VERBATIM so you never spend a
+turn reading their source files (a test keeps them in sync; the source file remains the
+authority if they ever disagree). `skills/meta/reviewer.md` is deliberately NOT
+preloaded - read it in full at the QC gate, as always.
+
+### Checkpoint protocol digest (authority: `skills/meta/checkpoint-protocol.md`)
+
+- Stage flow: read the manifest's `checkpoint_required` / `human_approval_default`;
+  write an `in_progress` checkpoint on stage entry; do the work; pass review; then
+  `write_checkpoint(..., status="completed")` - or `awaiting_human` + END YOUR TURN
+  when the stage gates (the manifest is binding; `lib/checkpoint.py` enforces it).
+- `init_project()` once at pipeline start (creates the layout + `project.json`).
+- Partial progress after each significant item - in boxed jobs, recorded inside the
+  item's own producing call (-> "Boxed-Job Efficiency"). Schema-valid canonical
+  artifacts go in `artifacts`; anything partial goes in `metadata.partial_progress`.
+- On entering a stage, ALWAYS check for its `in_progress` checkpoint and resume from
+  it instead of regenerating (never re-pay for work that exists).
+- Checkpoints live at `projects/<id>/checkpoint_<stage>.json`; superseded ones are
+  archived to `history/`, never destroyed.
+
+Read the full protocol file when a gate, resume conflict or schema question goes
+beyond this digest.
+
+### remotion-best-practices/rules/videos.md (verbatim)
+
+# Using videos in Remotion
+
+## Prerequisites
+
+First, the @remotion/media package needs to be installed.  
+If it is not, use the following command:
+
+```bash
+npx remotion add @remotion/media # If project uses npm
+bunx remotion add @remotion/media # If project uses bun
+yarn remotion add @remotion/media # If project uses yarn
+pnpm exec remotion add @remotion/media # If project uses pnpm
+```
+
+Use `<Video>` from `@remotion/media` to embed videos into your composition.
+
+```tsx
+import { Video } from "@remotion/media";
+import { staticFile } from "remotion";
+
+export const MyComposition = () => {
+  return <Video src={staticFile("video.mp4")} />;
+};
+```
+
+Remote URLs are also supported:
+
+```tsx
+<Video src="https://remotion.media/video.mp4" />
+```
+
+## Trimming
+
+Use `trimBefore` and `trimAfter` to remove portions of the video. Values are in seconds.
+
+```tsx
+const { fps } = useVideoConfig();
+
+return (
+  <Video
+    src={staticFile("video.mp4")}
+    trimBefore={2 * fps} // Skip the first 2 seconds
+    trimAfter={10 * fps} // End at the 10 second mark
+  />
+);
+```
+
+## Delaying
+
+Wrap the video in a `<Sequence>` to delay when it appears:
+
+```tsx
+import { Sequence, staticFile } from "remotion";
+import { Video } from "@remotion/media";
+
+const { fps } = useVideoConfig();
+
+return (
+  <Sequence from={1 * fps}>
+    <Video src={staticFile("video.mp4")} />
+  </Sequence>
+);
+```
+
+The video will appear after 1 second.
+
+## Sizing and Position
+
+Use the `style` prop to control size and position:
+
+```tsx
+<Video
+  src={staticFile("video.mp4")}
+  style={{
+    width: 500,
+    height: 300,
+    position: "absolute",
+    top: 100,
+    left: 50,
+    objectFit: "cover",
+  }}
+/>
+```
+
+## Volume
+
+Set a static volume (0 to 1):
+
+```tsx
+<Video src={staticFile("video.mp4")} volume={0.5} />
+```
+
+Or use a callback for dynamic volume based on the current frame:
+
+```tsx
+import { interpolate } from "remotion";
+
+const { fps } = useVideoConfig();
+
+return (
+  <Video
+    src={staticFile("video.mp4")}
+    volume={(f) =>
+      interpolate(f, [0, 1 * fps], [0, 1], { extrapolateRight: "clamp" })
+    }
+  />
+);
+```
+
+Use `muted` to silence the video entirely:
+
+```tsx
+<Video src={staticFile("video.mp4")} muted />
+```
+
+## Speed
+
+Use `playbackRate` to change the playback speed:
+
+```tsx
+<Video src={staticFile("video.mp4")} playbackRate={2} /> {/* 2x speed */}
+<Video src={staticFile("video.mp4")} playbackRate={0.5} /> {/* Half speed */}
+```
+
+Reverse playback is not supported.
+
+## Looping
+
+Use `loop` to loop the video indefinitely:
+
+```tsx
+<Video src={staticFile("video.mp4")} loop />
+```
+
+Use `loopVolumeCurveBehavior` to control how the frame count behaves when looping:
+
+- `"repeat"`: Frame count resets to 0 each loop (for `volume` callback)
+- `"extend"`: Frame count continues incrementing
+
+```tsx
+<Video
+  src={staticFile("video.mp4")}
+  loop
+  loopVolumeCurveBehavior="extend"
+  volume={(f) => interpolate(f, [0, 300], [1, 0])} // Fade out over multiple loops
+/>
+```
+
+## Pitch
+
+Use `toneFrequency` to adjust the pitch without affecting speed. Values range from 0.01 to 2:
+
+```tsx
+<Video
+  src={staticFile("video.mp4")}
+  toneFrequency={1.5} // Higher pitch
+/>
+<Video
+  src={staticFile("video.mp4")}
+  toneFrequency={0.8} // Lower pitch
+/>
+```
+
+Pitch shifting only works during server-side rendering, not in the Remotion Studio preview or in the `<Player />`.
+
+### remotion-best-practices/rules/assets.md (verbatim)
+
+# Importing assets in Remotion
+
+## The public folder
+
+Place assets in the `public/` folder at your project root.
+
+## Using staticFile()
+
+You MUST use `staticFile()` to reference files from the `public/` folder:
+
+```tsx
+import { Img, staticFile } from "remotion";
+
+export const MyComposition = () => {
+  return <Img src={staticFile("logo.png")} />;
+};
+```
+
+The function returns an encoded URL that works correctly when deploying to subdirectories.
+
+## Using with components
+
+**Images:**
+
+```tsx
+import { Img, staticFile } from "remotion";
+
+<Img src={staticFile("photo.png")} />;
+```
+
+**Videos:**
+
+```tsx
+import { Video } from "@remotion/media";
+import { staticFile } from "remotion";
+
+<Video src={staticFile("clip.mp4")} />;
+```
+
+**Audio:**
+
+```tsx
+import { Audio } from "@remotion/media";
+import { staticFile } from "remotion";
+
+<Audio src={staticFile("music.mp3")} />;
+```
+
+**Fonts:**
+
+```tsx
+import { staticFile } from "remotion";
+
+const fontFamily = new FontFace("MyFont", `url(${staticFile("font.woff2")})`);
+await fontFamily.load();
+document.fonts.add(fontFamily);
+```
+
+## Remote URLs
+
+Remote URLs can be used directly without `staticFile()`:
+
+```tsx
+<Img src="https://example.com/image.png" />
+<Video src="https://remotion.media/video.mp4" />
+```
+
+## Important notes
+
+- Remotion components (`<Img>`, `<Video>`, `<Audio>`) ensure assets are fully loaded before rendering
+- Special characters in filenames (`#`, `?`, `&`) are automatically encoded
+
+### framer-motion/SKILL.md (verbatim)
+
+# Framer Motion Animation Principles
+
+Implement all 12 Disney animation principles using Framer Motion's declarative React API.
+
+## 1. Squash and Stretch
+
+```jsx
+<motion.div
+  animate={{ scaleX: [1, 1.2, 1], scaleY: [1, 0.8, 1] }}
+  transition={{ duration: 0.3, times: [0, 0.5, 1] }}
+/>
+```
+
+## 2. Anticipation
+
+```jsx
+<motion.div
+  variants={{
+    idle: { y: 0, scaleY: 1 },
+    anticipate: { y: 10, scaleY: 0.9 },
+    jump: { y: -200 }
+  }}
+  initial="idle"
+  animate={["anticipate", "jump"]}
+  transition={{ duration: 0.5, times: [0, 0.2, 1] }}
+/>
+```
+
+## 3. Staging
+
+```jsx
+<motion.div animate={{ filter: "blur(3px)", opacity: 0.6 }} /> {/* bg */}
+<motion.div animate={{ scale: 1.1, zIndex: 10 }} /> {/* hero */}
+```
+
+## 4. Straight Ahead / Pose to Pose
+
+```jsx
+<motion.div
+  animate={{
+    x: [0, 100, 200, 300],
+    y: [0, -50, 0, -30]
+  }}
+  transition={{ duration: 1, ease: "easeInOut" }}
+/>
+```
+
+## 5. Follow Through and Overlapping Action
+
+```jsx
+<motion.div animate={{ x: 200 }} transition={{ duration: 0.5 }}>
+  <motion.span
+    animate={{ x: 200 }}
+    transition={{ duration: 0.5, delay: 0.05 }} // hair
+  />
+  <motion.span
+    animate={{ x: 200 }}
+    transition={{ duration: 0.6, delay: 0.1 }} // cape
+  />
+</motion.div>
+```
+
+## 6. Slow In and Slow Out
+
+```jsx
+<motion.div
+  animate={{ x: 300 }}
+  transition={{
+    duration: 0.6,
+    ease: [0.42, 0, 0.58, 1] // easeInOut cubic-bezier
+  }}
+/>
+// Or use: "easeIn", "easeOut", "easeInOut"
+```
+
+## 7. Arc
+
+```jsx
+<motion.div
+  animate={{
+    x: [0, 100, 200],
+    y: [0, -100, 0]
+  }}
+  transition={{ duration: 1, ease: "easeInOut" }}
+/>
+```
+
+## 8. Secondary Action
+
+```jsx
+<motion.button
+  whileHover={{ scale: 1.05 }}
+  whileTap={{ scale: 0.95 }}
+>
+  <motion.span
+    animate={{ rotate: [0, 10, -10, 0] }}
+    transition={{ duration: 0.3 }}
+  >
+    Icon
+  </motion.span>
+</motion.button>
+```
+
+## 9. Timing
+
+```jsx
+const timings = {
+  fast: { duration: 0.15 },
+  normal: { duration: 0.3 },
+  slow: { duration: 0.6 },
+  spring: { type: "spring", stiffness: 300, damping: 20 }
+};
+```
+
+## 10. Exaggeration
+
+```jsx
+<motion.div
+  animate={{ scale: 1.5, rotate: 720 }}
+  transition={{
+    type: "spring",
+    stiffness: 200,
+    damping: 10 // low damping = overshoot
+  }}
+/>
+```
+
+## 11. Solid Drawing
+
+```jsx
+<motion.div
+  style={{ perspective: 1000 }}
+  animate={{ rotateX: 45, rotateY: 30 }}
+  transition={{ duration: 0.5 }}
+/>
+```
+
+## 12. Appeal
+
+```jsx
+<motion.div
+  whileHover={{
+    scale: 1.02,
+    boxShadow: "0 20px 40px rgba(0,0,0,0.2)"
+  }}
+  transition={{ duration: 0.3 }}
+/>
+```
+
+## Stagger Children
+
+```jsx
+const container = {
+  hidden: { opacity: 0 },
+  show: {
+    opacity: 1,
+    transition: { staggerChildren: 0.1 }
+  }
+};
+
+<motion.ul variants={container} initial="hidden" animate="show">
+  {items.map(item => <motion.li variants={itemVariant} />)}
+</motion.ul>
+```
+
+## Key Framer Motion Features
+
+- `animate` - Target state
+- `variants` - Named animation states
+- `whileHover` / `whileTap` - Gesture animations
+- `transition` - Timing and easing
+- `AnimatePresence` - Exit animations
+- `useAnimation` - Programmatic control
+- `layout` - Auto-animate layout changes

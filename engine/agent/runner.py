@@ -277,6 +277,27 @@ def _set_generation_lines(ctx: JobContext, items: list[job_ledger.CostItem]) -> 
     ctx.store.save(ctx.job)
 
 
+async def _write_provider_menu(project_dir: Path, warn: Any) -> None:
+    """Preflight digest for the director: the provider-menu rollup, written once at job start so
+    the session reads a file instead of spending turns re-deriving it (AGENT_GUIDE sends the agent
+    to work/provider_menu.json first). Best-effort: the guide has the agent re-derive when the
+    file is missing or a tool call contradicts it, so a failure here never blocks the job."""
+    def build() -> str:
+        from tools.tool_registry import registry  # heavy import; runs in a worker thread
+        registry.discover()
+        summary = registry.provider_menu_summary()
+        summary["_generated"] = ("engine, at job start; re-derive via provider_menu_summary() "
+                                 "if a tool call contradicts this file")
+        return json.dumps(summary, indent=1)
+    try:
+        text = await asyncio.wait_for(asyncio.to_thread(build), timeout=45)
+        work = project_dir / "work"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "provider_menu.json").write_text(text, encoding="utf-8")
+    except Exception as exc:
+        warn(f"provider-menu preflight file skipped: {exc}")
+
+
 async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
                          resume: str | None, fork: bool = False, exports_baseline: dict[str, int] | None = None,
                          cost_log_baseline: list[tuple[str, float]] | None = None,
@@ -287,6 +308,8 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     session_file = agent_dir / "session_id.txt"
     # A resume of this job (POST /v1/jobs/{id}/resume) continues here, whatever kind of job it was.
     (agent_dir / "project_dir.txt").write_text(str(project_dir), encoding="utf-8")
+    if not resume:
+        await _write_provider_menu(project_dir, ctx.warn)
     stages = StageTracker()
     model = getattr(settings, "agent_model", "claude-haiku-5-5")
     effort = getattr(settings, "agent_effort", None)

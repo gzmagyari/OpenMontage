@@ -244,3 +244,17 @@ Does this feel right? I can adjust: voice, visual style, pacing, music, colors.
 4. **Checkpoints enable resume.** If the pipeline crashes at `compose`, the human can restart and it picks up from `compose` — not from `idea`. This is the whole point.
 
 5. **Be transparent in approval requests.** Don't just show the artifact — show the review findings, the cost, and any concerns. Help the human make an informed decision.
+
+## Boxed-Job Efficiency (Binding)
+
+In headless/boxed jobs (no human gates), every write above stays exactly as specified —
+but bookkeeping rides inside the calls that produce the work, never in turns of its own:
+
+- The Bash call that generates an item also appends it to `artifacts/cost_log.json` and
+  records the item's `in_progress` partial progress (same files, same schemas).
+- The stage-entry `in_progress` checkpoint still happens first (board liveness) — fold
+  it into the stage's first working call.
+- Stage-complete checkpoints are unchanged.
+
+This changes turn structure only. Every file, schema check, gate rule and resume
+guarantee in this protocol is unaffected.

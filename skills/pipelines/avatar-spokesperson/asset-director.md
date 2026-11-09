@@ -72,6 +72,59 @@ Recommended metadata keys:
 - support graphics stay minimal,
 - every referenced file exists.
 
+## Parallel Generation (Binding)
+
+When this stage needs several independent paid generations - presenter takes, b-roll
+motion clips, scene stills - submit them ALL from ONE Bash call that runs the
+submissions concurrently. The harness executes tool calls one after another even when
+you issue several in a single message, so sequential submission serializes provider
+waits: three ~90-second takes become 4-5 minutes instead of ~90 seconds.
+
+Pattern (takes shown; the same shape fits any independent batch):
+
+```bash
+python - <<'PY'
+import json, sys
+sys.path.insert(0, "/app")
+from concurrent.futures import ThreadPoolExecutor
+from tools.tool_registry import registry
+registry.discover()
+tool = registry._tools["fal_avatar"]
+BASE = "/data/projects/<project>"
+takes = {
+    "avatar1": {"model": "h3max-acting", "image_path": ..., "audio_path": ..., ...},
+    "avatar2": {...},
+    "avatar3": {...},
+}
+def run(item):
+    name, params = item
+    result = tool.execute(params)
+    json.dump(result, open(f"{BASE}/artifacts/{name}_call.json", "w"), indent=1)
+    return name, result
+with ThreadPoolExecutor(max_workers=len(takes)) as pool:
+    results = dict(pool.map(run, takes.items()))
+# Bookkeeping rides in the SAME call (checkpoint-protocol -> Boxed-Job Efficiency):
+log_path = f"{BASE}/artifacts/cost_log.json"
+log = json.load(open(log_path))
+for name, r in results.items():
+    print(name, "->", r.get("output_path"), r.get("cost_usd"))
+    log.append({"item": f"{name} H3 Max avatar take", "usd": r.get("cost_usd")})
+json.dump(log, open(log_path, "w"), indent=1)
+PY
+```
+
+Rules:
+
+- One Bash call per batch; the concurrency lives inside it (ThreadPoolExecutor, or
+  `&` + `wait` over separate processes writing per-item logs).
+- Write each submission's full response JSON to `artifacts/<name>_call.json` exactly as
+  you would for a sequential call, and append the cost-log entries in the same call.
+- Inspection stays separate and UNCHANGED: after the batch returns, verify every result
+  (start/middle frames, durations, same presenter) before using any of them.
+- Samples still come first where the process requires them; the parallel batch is what
+  follows an approved sample. Never wait for one take to finish before SUBMITTING the
+  next.
+
 ## No-Avatar Path
 
 When the EP has triggered a narration-over-graphics pivot (neither `talking_head` nor `lip_sync` available), skip avatar generation entirely and produce a graphics-driven asset kit instead:
