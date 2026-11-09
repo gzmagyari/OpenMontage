@@ -36,8 +36,10 @@ SDK_ENV = ("CLAUDE_CODE_ENTRYPOINT", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_SD
 # Names that hold credentials. Their values never enter an agent box.
 _SECRET_NAME = re.compile(r"(KEY|TOKEN|SECRET|SECRETKEY|ACCESSKEY|PASSWORD|CREDENTIALS)$", re.I)
 _SERVER_ONLY = {"OPENMONTAGE_API_TOKEN", "GPG_KEY", "ANTHROPIC_API_KEY"}
-# Small models the CLI itself uses for side tasks (WebFetch summaries and the like).
-SIDE_MODEL_PREFIXES = ("claude-haiku-",)
+# Side models the session may call beyond the main one: the CLI's own small-model side
+# tasks (WebFetch summaries and the like) and the delegation subagents (mechanic on Haiku,
+# the composer on Sonnet). The gateway prices each prefix at its own rates.
+SIDE_MODEL_PREFIXES = ("claude-haiku-", "claude-sonnet-")
 
 
 class SandboxUnavailable(Exception):

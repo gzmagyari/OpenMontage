@@ -61,6 +61,37 @@ MECHANIC_AGENT = AgentDefinition(
     model="claude-haiku-5-5",
 )
 
+# The composition co-author: an LLM subagent that writes the Remotion composition's first
+# full draft for THIS video from the locked plan (creative code, never a template), in
+# parallel with the provider burst and the mechanic. The director reviews and edits the
+# draft and owns the final cut. Model is a deployment knob (OPENMONTAGE_COMPOSER_MODEL).
+COMPOSER_MODEL_DEFAULT = "claude-sonnet-5-5"
+
+
+def composer_agent(model: str | None = None) -> AgentDefinition:
+    return AgentDefinition(
+        description="Composition co-author: writes the Remotion composition's first full "
+                    "draft from the locked plan, shot list and asset-manifest paths (assets "
+                    "may still be generating - the paths are fixed). Give it the plan, the "
+                    "exact artifact paths, presenter/voice/music direction and caption "
+                    "timing when it exists.",
+        prompt=(
+            "You are the composition co-author inside a video job's sandbox. From the brief "
+            "- the locked plan, numbered shot list, exact asset paths (the files may still "
+            "be generating; wire the paths anyway), on-screen text and timing - author the "
+            "complete Remotion composition for this specific video in composition/src/, "
+            "extending the pre-staged workspace. Write creative, purpose-built composition "
+            "code that serves this video's plan; never a generic template. Typecheck or "
+            "bundle what you wrote and fix what fails. Then report concisely: the files you "
+            "produced, the composition id and duration, and anything you had to assume. "
+            "Never call paid generation tools, never browse the web, never render the final "
+            "export, never touch cost or billing files, and never override the plan's "
+            "creative decisions; if the brief needs any of that, stop and say so."
+        ),
+        tools=["Bash", "Read", "Write", "Edit"],
+        model=model or COMPOSER_MODEL_DEFAULT,
+    )
+
 
 class AgentUnavailable(Exception):
     """The agent cannot run in this deployment (missing credential or SDK)."""
@@ -172,6 +203,7 @@ class AgentSession:
         max_turns: int,
         effort: EffortLevel | None = None,
         max_claude_usd: float | None = None,
+        composer_model: str | None = None,
         resume: str | None = None,
         fork: bool = False,
         env_extra: dict[str, str] | None = None,
@@ -194,6 +226,7 @@ class AgentSession:
         self.max_turns = max_turns
         self.effort = effort
         self.max_claude_usd = max_claude_usd
+        self.composer_model = composer_model
         self.resume = resume
         self.fork = fork              # resume as a new session, leaving the original untouched
         self.env_extra = env_extra
@@ -291,7 +324,7 @@ class AgentSession:
             # Load the repo's CLAUDE.md -> AGENT_GUIDE.md exactly like an interactive run.
             setting_sources=["project"],
             tools=AGENT_TOOLS,
-            agents={"mechanic": MECHANIC_AGENT},
+            agents={"mechanic": MECHANIC_AGENT, "composer": composer_agent(self.composer_model)},
             system_prompt={"type": "preset", "preset": "claude_code"},
             resume=self.resume,
             fork_session=self.fork,

@@ -57,3 +57,13 @@ def test_llm_upstream_refuses_a_non_http_value(monkeypatch):
     monkeypatch.setenv("OPENMONTAGE_AGENT_LLM_UPSTREAM_KEY", "sk-virtual")
     with pytest.raises(ValueError, match="http"):
         load_settings()
+
+
+def test_composer_model_defaults_to_sonnet(monkeypatch):
+    monkeypatch.delenv("OPENMONTAGE_COMPOSER_MODEL", raising=False)
+    assert load_settings().composer_model == "claude-sonnet-5-5"
+
+
+def test_composer_model_is_an_env_knob(monkeypatch):
+    monkeypatch.setenv("OPENMONTAGE_COMPOSER_MODEL", "claude-opus-5-5")
+    assert load_settings().composer_model == "claude-opus-5-5"

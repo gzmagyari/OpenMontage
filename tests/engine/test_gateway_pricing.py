@@ -1,19 +1,38 @@
-"""Model-aware gateway pricing: side-model (Haiku) traffic meters at its own rates."""
+"""Model-aware gateway pricing: side-model (Haiku/Sonnet) traffic meters at its own rates."""
 
 from __future__ import annotations
 
 import inspect
 
 from engine.agent.budget import BudgetMeter
-from engine.sandbox.gateway import ClaudeGateway, _HAIKU_RATES, _rates_for
+from engine.sandbox.gateway import ClaudeGateway, _HAIKU_RATES, _SONNET_RATES, _rates_for
 
 
 def test_rates_for_picks_the_side_model_table():
     assert _rates_for("claude-haiku-5-5") is _HAIKU_RATES
     assert _rates_for("claude-haiku-4-5") is _HAIKU_RATES
+    assert _rates_for("claude-sonnet-5-5") is _SONNET_RATES
     assert _rates_for("gpt-6.1-terra-fast") is None
     assert _rates_for("claude-opus-5-5") is None
     assert _rates_for(None) is None
+
+
+def test_the_main_model_always_bills_at_the_env_rates(tmp_path):
+    # A Sonnet DIRECTOR's own traffic uses the deployment's BUDGET_LLM_* rates; only true
+    # side traffic (subagents, CLI side tasks) gets the per-prefix tables.
+    gw = ClaudeGateway(socket_path=tmp_path / "gw.sock", token="t", api_key="k",
+                       models={"claude-sonnet-5-5"},
+                       model_prefixes=("claude-haiku-", "claude-sonnet-"), cap_usd=1.0)
+    assert gw._rates_for_request("claude-sonnet-5-5") is None
+    assert gw._rates_for_request("claude-sonnet-4-5") is _SONNET_RATES
+    assert gw._rates_for_request("claude-haiku-5-5") is _HAIKU_RATES
+    assert gw._rates_for_request("claude-opus-5-5") is None
+
+
+def test_the_box_admits_both_delegation_prefixes():
+    from engine.sandbox.box import SIDE_MODEL_PREFIXES
+    assert "claude-haiku-" in SIDE_MODEL_PREFIXES
+    assert "claude-sonnet-" in SIDE_MODEL_PREFIXES
 
 
 def test_the_forward_path_accepts_the_request_model():

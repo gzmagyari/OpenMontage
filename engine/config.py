@@ -89,6 +89,7 @@ class Settings:
     agent_effort: str | None = None
     agent_llm_upstream: str | None = None
     agent_llm_upstream_key: str | None = None
+    composer_model: str = "claude-sonnet-5-5"
 
     @property
     def jobs_dir(self) -> Path:
@@ -142,6 +143,10 @@ def load_settings() -> Settings:
         # (set BUDGET_LLM_*_PER_MTOK to the model's real rates).
         agent_llm_upstream=llm_upstream,
         agent_llm_upstream_key=llm_upstream_key,
+        # The composer subagent's model (the Remotion-composition co-author). Sonnet by
+        # default: strong at creative code at a fraction of Opus rates. The box admits it
+        # via SIDE_MODEL_PREFIXES and the gateway prices claude-sonnet-* traffic separately.
+        composer_model=_str("OPENMONTAGE_COMPOSER_MODEL", "claude-sonnet-5-5"),
     )
 
 

@@ -28,20 +28,28 @@ UPSTREAM = "https://api.anthropic.com"
 _MAX_BODY = 64 * 1024 * 1024
 
 # Side-model traffic is priced at its own rates; everything else falls back to the meter's
-# default (the deployment's main-model BUDGET_LLM_* rates). The prefix mirrors the box's
-# SIDE_MODEL_PREFIXES allowlist. Haiku's >100K-prompt price tier is deliberately ignored:
-# delegated subagent briefs stay far below it.
+# default (the deployment's main-model BUDGET_LLM_* rates). The prefixes mirror the box's
+# SIDE_MODEL_PREFIXES allowlist. The long-context price tiers (Haiku >100K, Sonnet >200K
+# prompts) are deliberately ignored: delegated subagent briefs stay far below them.
 _HAIKU_RATES = {
     "input": float(os.getenv("BUDGET_LLM_HAIKU_INPUT_PER_MTOK", "0.10")),
     "output": float(os.getenv("BUDGET_LLM_HAIKU_OUTPUT_PER_MTOK", "0.50")),
     "cache_write": float(os.getenv("BUDGET_LLM_HAIKU_CACHE_WRITE_PER_MTOK", "0.125")),
     "cache_read": float(os.getenv("BUDGET_LLM_HAIKU_CACHE_READ_PER_MTOK", "0.01")),
 }
+_SONNET_RATES = {
+    "input": float(os.getenv("BUDGET_LLM_SONNET_INPUT_PER_MTOK", "2")),
+    "output": float(os.getenv("BUDGET_LLM_SONNET_OUTPUT_PER_MTOK", "10")),
+    "cache_write": float(os.getenv("BUDGET_LLM_SONNET_CACHE_WRITE_PER_MTOK", "2.50")),
+    "cache_read": float(os.getenv("BUDGET_LLM_SONNET_CACHE_READ_PER_MTOK", "0.10")),
+}
 
 
 def _rates_for(model: Any) -> dict[str, float] | None:
     if isinstance(model, str) and model.startswith("claude-haiku-"):
         return _HAIKU_RATES
+    if isinstance(model, str) and model.startswith("claude-sonnet-"):
+        return _SONNET_RATES
     return None
 _SKIP_REQUEST = {"connection", "keep-alive", "proxy-authorization", "proxy-connection", "te", "trailer",
                  "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding",
@@ -146,6 +154,15 @@ class ClaudeGateway:
     def _model_allowed(self, model: Any) -> bool:
         return isinstance(model, str) and (model in self._models or model.startswith(self._prefixes))
 
+    def _rates_for_request(self, model: Any) -> dict[str, float] | None:
+        # The deployment's MAIN model always bills at the meter's default (env BUDGET_LLM_*)
+        # rates, even when its name matches a side prefix (e.g. a Sonnet director): the env
+        # rates are the deployment's statement of what the main model costs. Only true side
+        # traffic (subagents, CLI side tasks) uses the per-prefix tables.
+        if isinstance(model, str) and model in self._models:
+            return None
+        return _rates_for(model)
+
     def _refuse(self, reason: str) -> None:
         log.warning("Claude gateway refused a request: %s", reason)
         if self._on_refusal:
@@ -222,6 +239,6 @@ class ClaudeGateway:
                 await writer.drain()
             usage.close()
             if usage.usage:
-                self.meter.add_usage(usage.usage, usage.message_id, rates=_rates_for(model))
+                self.meter.add_usage(usage.usage, usage.message_id, rates=self._rates_for_request(model))
         finally:
             await response.aclose()
