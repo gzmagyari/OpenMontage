@@ -356,8 +356,9 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             if mapped:
                 ctx.set_stage(mapped[0], ctx.job.stage_detail, progress=mapped[1])
 
-    async def watch() -> None:
+    async def watch(box=None) -> None:
         """Keeps the money state current during a long tool call; returns if spend passes the ceiling."""
+        gateway_shown = 0.0
         while True:
             await asyncio.sleep(_WATCH_SECONDS)
             try:
@@ -365,6 +366,14 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             except OSError as exc:
                 ctx.warn(f"could not refresh the budget file: {exc}")
             sync_ledger()
+            gateway = getattr(box, "gateway", None)
+            if gateway is not None:
+                # Through a non-Anthropic upstream the SDK streams zero usage, so the gateway
+                # meter is the only live view of the model spend; show it as it grows.
+                live = gateway.spend_usd
+                if live > max(meter.llm_spend(), gateway_shown) + 0.005:
+                    gateway_shown = live
+                    _set_line(ctx, "claude agent", round(live, 4), llm_provider, estimated=True)
             if meter.generation_spend() > meter.budget() * 1.5 + 0.50:
                 return
 
@@ -441,7 +450,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             settings_json=box.settings_json if box else None,
         )
         run_task = asyncio.create_task(session.run(session_prompt))
-        watch_task = asyncio.create_task(watch())
+        watch_task = asyncio.create_task(watch(box))
         try:
             done, _ = await asyncio.wait({run_task, watch_task}, return_when=asyncio.FIRST_COMPLETED,
                                          timeout=max(0.0, deadline - loop.time()))
