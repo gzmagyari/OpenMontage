@@ -309,20 +309,40 @@ Wall-clock time is a product feature: headless jobs are billed and judged by it.
 
 ## Delegation (Binding)
 
-The box has a `mechanic` subagent (the Task tool): the side model, fast and cheap, for
-work that needs no judgment. Issue several Task calls in ONE message and they run
-concurrently while you wait inside the turn - mechanical phases finish in max() time,
-not sum().
+The box has two subagents (the Task tool). Several Task calls issued in ONE message run
+concurrently while you wait inside the turn - delegated phases finish in max() time,
+not sum(). Foreground only, and never poll: a background burst or a spawned subagent is
+launched, other work happens, and results are collected ONCE at the stage boundary.
+Repeated status-check Bash calls are wasted turns and are a protocol violation.
 
-**Delegate:** caption/subtitle conforming and alignment chores; QA frame extraction
-and mechanical checks (durations, dimensions, decode checks, file existence);
-composition assembly chores (copying assets into `public/`, boilerplate scene wiring);
-file wrangling and probes.
+- **`composer`** - the composition co-author (its own LLM). It writes the Remotion
+  composition's FIRST FULL DRAFT for this video in `composition/src/`, extending the
+  pre-staged workspace, and typechecks it. Its brief must be self-contained: the locked
+  plan (angle, scripted seconds, numbered shot list), the shopping list's exact artifact
+  paths (assets may still be generating - the paths are already fixed), presenter/voice/
+  music direction, on-screen text, and caption timing when it exists. The draft is
+  creative code written for this video, never a template - but CREATIVE AUTHORITY stays
+  with you: review the draft, make small fixes yourself, send structural rework back
+  with a fix list, and own the final cut.
+- **`mechanic`** - the cheap mechanical worker: caption/subtitle conforming and
+  alignment chores; QA frame extraction and mechanical checks (durations, dimensions,
+  decode checks, file existence); composition assembly chores (copying assets into
+  `public/`, boilerplate scene wiring); file wrangling and probes.
+
+**The one-message spawn (MUST, at script lock in headless jobs):** the moment the plan,
+script and shopping list are locked, issue ONE message containing (a) the whole provider
+burst as a single background Bash call (Latency rule 5), (b) `Task composer` with the
+brief above, and (c) `Task mechanic` for conforming/QA prep that needs no asset bytes.
+While you block on the Tasks, the burst cooks underneath; when they return, collect the
+burst once and continue. The compose checkpoint is INVALID without the composer's draft
+recorded in its delegation record (checkpoint-protocol -> Boxed-Job Efficiency); if the
+draft is missing, spawn the composer - authoring the first draft solo is a protocol
+violation, not initiative.
 
 **Never delegate:** creative decisions (script, casting, shot choices, titles, music
 direction); QC verdicts (reading `skills/meta/reviewer.md` and judging against it
-stays yours); paid generation calls; decision-log judgment entries; anything whose
-brief you cannot make fully self-contained.
+stays yours); paid generation calls; decision-log judgment entries; the final render
+and settlement; anything whose brief you cannot make fully self-contained.
 
 **Rules:** foreground only - never run a subagent in the background; at most 3 at
 once; every brief names its exact input paths, output paths and the check that proves
@@ -813,6 +833,10 @@ preloaded - read it in full at the QC gate, as always.
   it instead of regenerating (never re-pay for work that exists).
 - Checkpoints live at `projects/<id>/checkpoint_<stage>.json`; superseded ones are
   archived to `history/`, never destroyed.
+- Boxed jobs require two metadata fields: the script checkpoint's
+  `metadata.shopping_list` (every paid item with its exact artifact path) and the
+  compose checkpoint's `metadata.delegation` (subagent -> artifacts; no composer
+  entry = invalid checkpoint - spawn the composer, never author the first draft solo).
 
 Read the full protocol file when a gate, resume conflict or schema question goes
 beyond this digest.

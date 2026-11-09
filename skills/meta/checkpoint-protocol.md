@@ -256,5 +256,18 @@ but bookkeeping rides inside the calls that produce the work, never in turns of 
   it into the stage's first working call.
 - Stage-complete checkpoints are unchanged.
 
+Two checkpoint metadata fields are REQUIRED in boxed jobs (they ride in `metadata`, so
+schemas are untouched):
+
+- The **script** checkpoint carries `metadata.shopping_list`: every paid generation the
+  locked plan will buy, each with its exact artifact path. The burst buys exactly this
+  list (asset-director -> "Shopping list (Binding)").
+- The **compose** checkpoint carries `metadata.delegation`: which subagent produced
+  which artifacts, e.g. `{"composer": ["composition/src/Promo.tsx", ...], "mechanic":
+  ["work/captions_conformed.json", ...]}`. A compose checkpoint whose delegation record
+  has no composer entry is INVALID: the composition's first draft must come from the
+  `composer` subagent (AGENT_GUIDE -> "Delegation (Binding)") - spawn it rather than
+  authoring solo, and record rework rounds too.
+
 This changes turn structure only. Every file, schema check, gate rule and resume
 guarantee in this protocol is unaffected.

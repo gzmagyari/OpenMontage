@@ -134,7 +134,18 @@ each writing its result JSON and cost-log entries exactly as above. Do the LLM-s
 prep (captions structure, edit plan, composition work) while it cooks and collect the
 results at edit time. Before RUN_REPORT.md: every background task completed, every
 expected output file exists; resubmit only the failed items. Never end the session
-with a background job still running.
+with a background job still running. Never poll it either: launch, work, collect ONCE
+at the stage boundary - repeated status-check calls are wasted turns.
+
+### Shopping list (Binding)
+
+The burst buys exactly what the locked plan's shopping list names (script-director ->
+"Script Lock in Headless Jobs"), writing each item to its listed artifact path - that
+is what lets the composer wire asset paths before the files exist. Failed items are
+resubmitted idempotently (same per-item files). A paid item NOT on the list may be
+bought mid-run only after appending a one-line justification to the plan file
+(`artifacts/video_plan.md`) in the same call that buys it - QC-driven re-takes are the
+expected case, silent extras are not.
 
 ## No-Avatar Path
 

@@ -61,6 +61,18 @@ Record important findings in:
 - subtitles stay readable,
 - the presenter remains visually stable.
 
+## Headless Jobs: Composer Draft and Background Renders (Binding)
+
+- The composition you render here started as the `composer` subagent's draft, reviewed
+  and edited by you. The compose checkpoint must carry the delegation record
+  (checkpoint-protocol -> Boxed-Job Efficiency): which subagent produced which
+  artifacts. A compose checkpoint without the composer's draft in that record is
+  INVALID - if you somehow got here without it, stop and spawn the composer for the
+  rework instead of pressing on solo.
+- Preview and final renders run as background Bash while you do LLM-side work (QC
+  notes, RUN_REPORT drafting); collect ONCE when the render finishes - no polling.
+  The final export, its verification and settlement stay yours, never a subagent's.
+
 ## Common Pitfalls
 
 - Letting subtitles cover the chin or mouth area.

@@ -37,6 +37,14 @@ If the avatar path has limitations such as visible lip-sync risk, retain that no
 - poster frame or thumbnail concept features the presenter cleanly,
 - review notes stay attached to the package.
 
+## Headless Jobs: Report Requirements (Binding)
+
+RUN_REPORT.md is not complete without the delegation record - which subagent
+(composer, mechanic) produced which artifacts - and the shopping-list reconciliation
+(every paid item on the list bought or accounted for; every bought item on the list
+or justified in the plan file). Internal cost figures stay internal: customer-facing
+notes never show cost, margin or multipliers.
+
 ## Common Pitfalls
 
 - Mixing hero and derivative exports without clear naming.

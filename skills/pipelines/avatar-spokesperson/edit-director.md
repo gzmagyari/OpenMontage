@@ -40,6 +40,17 @@ Recommended metadata keys:
 - scene transitions are calm and intentional,
 - the CTA lands once and clearly.
 
+## Headless Jobs: Your Decisions, the Composer's Draft (Binding)
+
+In a boxed/headless job the edit decisions - cut order, overlay timing, CTA landing,
+what carries each beat - are yours and stay yours. Their IMPLEMENTATION in Remotion
+code arrives as the `composer` subagent's first full draft (spawned at script lock
+with the plan; AGENT_GUIDE -> "Delegation (Binding)"). Reconcile your edit decisions
+against that draft when the real asset timings land (TTS/caption durations shift
+seconds around): small fixes you make directly, structural rework goes back to the
+composer as a fix list. Do not rewrite the composition from scratch solo - that is
+the serial path this pipeline exists to avoid.
+
 ## Common Pitfalls
 
 - Overcutting to simulate energy.

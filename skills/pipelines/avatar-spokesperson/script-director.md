@@ -69,6 +69,23 @@ Every factual claim in the script should be traceable to the `research_brief`.
 If you make a claim that isn't in the research, do additional research and
 add the source. Do not invent statistics, dates, or attributions.
 
+## Script Lock in Headless Jobs (Binding)
+
+In a boxed/headless job the script lock is the pipeline's ignition point, and two
+things are part of locking it:
+
+1. **The shopping list.** The locked plan names EVERY paid generation this video will
+   buy, each with its exact artifact path (e.g. `artifacts/voice1.mp3`,
+   `artifacts/take_hook.mp4`): presenter takes, b-roll motions, stills, TTS, music.
+   Every item is justified by the plan - budget is production fuel, not a collection
+   hobby. Default presenter coverage is the hook plus 1-2 body takes; buy more only
+   when the prompt or the plan genuinely demands it. The script checkpoint records the
+   list (`metadata.shopping_list`); the burst buys exactly this list.
+2. **The one-message spawn.** The next message after the lock fires the whole parallel
+   stage at once - the background provider burst, `Task composer`, `Task mechanic` -
+   per AGENT_GUIDE -> "Delegation (Binding)". Do not generate assets one by one, do not
+   author the composition solo, and do not poll the burst.
+
 ## Common Pitfalls
 
 - Overstuffing one scene because the script reads well on paper.

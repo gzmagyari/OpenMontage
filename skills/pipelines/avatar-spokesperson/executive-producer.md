@@ -163,6 +163,17 @@ CHECK: Output validation
 | Max total budget | Configurable (default $2) |
 | Max total wall-time | 12 minutes |
 
+## Headless Jobs: Parallel Production Contract (Binding)
+
+In a boxed/headless run the EP enforces the parallel shape end to end:
+
+- The script checkpoint carries `metadata.shopping_list`; the compose checkpoint
+  carries `metadata.delegation` (checkpoint-protocol -> Boxed-Job Efficiency).
+- The one-message spawn at script lock happened (burst + composer + mechanic,
+  AGENT_GUIDE -> "Delegation (Binding)"); the burst was collected once, not polled.
+- RUN_REPORT.md includes the delegation record (who produced what) and reconciles
+  the cost log against the shopping list before settlement.
+
 ## Common Pitfalls
 
 - **Uncanny valley**: If avatar quality is low, it undermines the entire video. Be honest about tool capabilities.
