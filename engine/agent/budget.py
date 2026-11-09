@@ -51,13 +51,17 @@ class BudgetMeter:
     def remaining(self) -> float:
         return self.budget() - self.generation_spend()
 
-    def add_usage(self, usage: dict[str, Any] | None, message_id: str | None = None) -> float:
+    def add_usage(self, usage: dict[str, Any] | None, message_id: str | None = None,
+                  rates: dict[str, float] | None = None) -> float:
         """Fold one API call's token usage into the live LLM estimate. The stream repeats a
-        call's usage on every content block it emits, so a message id counts once."""
+        call's usage on every content block it emits, so a message id counts once. ``rates``
+        prices this one call at other per-MTok rates (the gateway passes the side model's own
+        rates for claude-haiku-* traffic); the default is the deployment's main-model rates."""
         if not isinstance(usage, dict) or message_id in self._seen_messages:
             return self.llm_spend()
         if message_id:
             self._seen_messages.add(message_id)
+        table = rates or _RATES
         tokens = {
             "input": usage.get("input_tokens"),
             "output": usage.get("output_tokens"),
@@ -66,7 +70,7 @@ class BudgetMeter:
         }
         for kind, count in tokens.items():
             if isinstance(count, (int, float)) and count > 0:
-                self.llm_estimate += float(count) * _RATES[kind] / 1_000_000.0
+                self.llm_estimate += float(count) * table[kind] / 1_000_000.0
         return self.llm_spend()
 
     def llm_spend(self) -> float:

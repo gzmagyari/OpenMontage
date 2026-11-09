@@ -29,16 +29,37 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk import query as sdk_query  # tests monkeypatch engine.agent.session.sdk_query
-from claude_agent_sdk.types import EffortLevel
+from claude_agent_sdk.types import AgentDefinition, EffortLevel
 
 # Nothing inherited may redirect auth or behaviour: the session env is rebuilt
 # from scratch and exactly one credential is injected (saasbatch's SCRUB rule).
 _SCRUB = re.compile(r"^(ANTHROPIC|CLAUDE|AI_AGENT|BAGGAGE|OTEL_|SENTRY_)", re.IGNORECASE)
 
-# A job is one continuous turn, on the tools production runs use. An allow-list: wake-ups, cron,
-# workflows and subagents all let the agent end its turn with work still running, and a later
-# CLI's new tools stay out until someone decides otherwise.
-AGENT_TOOLS = ["Bash", "Read", "Write", "Edit", "Skill", "WebFetch", "WebSearch"]
+# A job is one continuous turn, on the tools production runs use. An allow-list: wake-ups, cron
+# and workflows all let the agent end its turn with work still running, and a later CLI's new
+# tools stay out until someone decides otherwise. Task joined for FOREGROUND subagents only:
+# several issued in one message run concurrently and the director blocks until all return, so
+# work still never outlives the turn (delegation rules: AGENT_GUIDE "Delegation (Binding)").
+AGENT_TOOLS = ["Bash", "Read", "Write", "Edit", "Skill", "Task", "WebFetch", "WebSearch"]
+
+# The delegation pool: mechanical work runs on the side model, in parallel, at side-model
+# rates (the gateway prices claude-haiku-* traffic separately). Creative decisions, QC
+# verdicts and paid provider calls stay with the director.
+MECHANIC_AGENT = AgentDefinition(
+    description="Fast mechanical worker for file wrangling, ffmpeg probes and frame "
+                "extraction, caption/subtitle conforming and composition chores. Give it a "
+                "self-contained brief with exact input and output paths.",
+    prompt=(
+        "You are a production mechanic inside a video job's sandbox. Do exactly the mechanical "
+        "task in your brief - file operations, ffmpeg probes and frame extraction, "
+        "caption/subtitle conforming, Remotion composition chores - then report concisely what "
+        "you did and what you verified, naming the files you produced. Never call paid "
+        "generation tools, never browse the web, never make creative decisions; if the brief "
+        "needs any of that, stop and say so instead of improvising."
+    ),
+    tools=["Bash", "Read", "Write", "Edit"],
+    model="claude-haiku-5-5",
+)
 
 
 class AgentUnavailable(Exception):
@@ -270,6 +291,7 @@ class AgentSession:
             # Load the repo's CLAUDE.md -> AGENT_GUIDE.md exactly like an interactive run.
             setting_sources=["project"],
             tools=AGENT_TOOLS,
+            agents={"mechanic": MECHANIC_AGENT},
             system_prompt={"type": "preset", "preset": "claude_code"},
             resume=self.resume,
             fork_session=self.fork,

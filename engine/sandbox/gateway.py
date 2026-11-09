@@ -26,6 +26,23 @@ log = logging.getLogger(__name__)
 
 UPSTREAM = "https://api.anthropic.com"
 _MAX_BODY = 64 * 1024 * 1024
+
+# Side-model traffic is priced at its own rates; everything else falls back to the meter's
+# default (the deployment's main-model BUDGET_LLM_* rates). The prefix mirrors the box's
+# SIDE_MODEL_PREFIXES allowlist. Haiku's >100K-prompt price tier is deliberately ignored:
+# delegated subagent briefs stay far below it.
+_HAIKU_RATES = {
+    "input": float(os.getenv("BUDGET_LLM_HAIKU_INPUT_PER_MTOK", "0.10")),
+    "output": float(os.getenv("BUDGET_LLM_HAIKU_OUTPUT_PER_MTOK", "0.50")),
+    "cache_write": float(os.getenv("BUDGET_LLM_HAIKU_CACHE_WRITE_PER_MTOK", "0.125")),
+    "cache_read": float(os.getenv("BUDGET_LLM_HAIKU_CACHE_READ_PER_MTOK", "0.01")),
+}
+
+
+def _rates_for(model: Any) -> dict[str, float] | None:
+    if isinstance(model, str) and model.startswith("claude-haiku-"):
+        return _HAIKU_RATES
+    return None
 _SKIP_REQUEST = {"connection", "keep-alive", "proxy-authorization", "proxy-connection", "te", "trailer",
                  "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding",
                  "x-api-key", "authorization"}
@@ -150,11 +167,14 @@ class ClaudeGateway:
                 self._refuse(f"{head.method} {path}")
                 await respond_error(writer, 404, "not_found_error", "only the Anthropic API is served here")
                 return
+            model: Any = None
             if body:
                 try:
                     payload = json.loads(body)
                 except ValueError:
                     payload = None
+                if isinstance(payload, dict):
+                    model = payload.get("model")
                 if isinstance(payload, dict) and "model" in payload and not self._model_allowed(payload["model"]):
                     self._refuse(f"model {payload.get('model')!r}")
                     await respond_error(writer, 403, "permission_error", "this model is not available to this job")
@@ -165,7 +185,7 @@ class ClaudeGateway:
                                     "this job's Claude budget is used up; finish with what exists")
                 return
             async with self._slots:
-                await self._forward(head, body, writer)
+                await self._forward(head, body, writer, model=model)
         except HttpError as exc:
             await respond_error(writer, exc.status, "invalid_request_error", exc.message)
         except (ConnectionError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
@@ -179,7 +199,8 @@ class ClaudeGateway:
         finally:
             writer.close()
 
-    async def _forward(self, head: Any, body: bytes, writer: asyncio.StreamWriter) -> None:
+    async def _forward(self, head: Any, body: bytes, writer: asyncio.StreamWriter,
+                       model: Any = None) -> None:
         assert self._client is not None
         headers = [(k, v) for k, v in head.headers if k.lower() not in _SKIP_REQUEST]
         headers += [("x-api-key", self._api_key), ("accept-encoding", "identity")]
@@ -201,6 +222,6 @@ class ClaudeGateway:
                 await writer.drain()
             usage.close()
             if usage.usage:
-                self.meter.add_usage(usage.usage, usage.message_id)
+                self.meter.add_usage(usage.usage, usage.message_id, rates=_rates_for(model))
         finally:
             await response.aclose()
