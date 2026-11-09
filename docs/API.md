@@ -177,8 +177,11 @@ The container runs as an ordinary user (uid 10001) with no capabilities, and eac
 on top. Without these options, video jobs fail with `agent_unavailable` instead of running unboxed,
 and `GET /readyz` answers 503 with `agent_box: false` and the reason under `problems`, so a deploy
 can check the box without running anything in the container. After a rebuild, run
-`python scripts/agent_box_check.py` in the container (no cost), then `scripts/agent_session_smoke.py`
-(about $0.01).
+`python scripts/agent_box_check.py` in the container (no cost), `python scripts/kit_box_check.py`
+(no cost: a small video made with the video kit inside a box), then `scripts/agent_session_smoke.py`
+(about $0.01). After a change to the job brief, the guide or the kit, `scripts/kit_authoring_probe.py`
+rehearses the director's planning step on real prompts, in a throwaway container: model calls only,
+nothing can be bought, and without `--spend` it calls no model at all (see the script).
 
 ## Agent boxes
 
