@@ -289,13 +289,23 @@ def session_facts(agent_dir: Path, project_dir: Path) -> dict[str, Any]:
     journal = _read_jsonl(agent_dir / "journal.jsonl")
     transcript = _read_jsonl(agent_dir / "transcript.jsonl")
     inputs: dict[str, tuple[str, dict[str, Any]]] = {}
+    outputs: dict[str, str] = {}  # whole tool results; the journal keeps only their first 2000 characters
     subagents, result = [], {}
     for row in transcript:
         kind = row.get("type")
+        content = row.get("content")
+        blocks: list[Any] = content if isinstance(content, list) else []
         if kind == "AssistantMessage":
-            for block in row.get("content") or []:
+            for block in blocks:
                 if isinstance(block, dict) and block.get("name") and isinstance(block.get("input"), dict):
                     inputs[str(block.get("id"))] = (str(block["name"]), block["input"])
+        elif kind == "UserMessage":
+            for block in blocks:
+                if isinstance(block, dict) and block.get("tool_use_id"):
+                    body = block.get("content")
+                    if isinstance(body, list):
+                        body = "\n".join(str(part.get("text", "")) for part in body if isinstance(part, dict))
+                    outputs[str(block["tool_use_id"])] = str(body or "")
         elif kind == "TaskStartedMessage":
             subagents.append({"type": row.get("data", {}).get("subagent_type"), "what": row.get("description")})
         elif kind == "ResultMessage":
@@ -333,7 +343,7 @@ def session_facts(agent_dir: Path, project_dir: Path) -> dict[str, Any]:
         if not ran:
             continue
         outcome = results.get(str(entry.get("id")), {})
-        text = str(outcome.get("text") or "")
+        text = outputs.get(str(entry.get("id"))) or str(outcome.get("text") or "")
         ok: bool | None = None
         if "NOT OK" in text or re.search(r"^kit: ", text, re.M) or "Nothing was rendered" in text or "No sheet was made" in text:
             ok = False
@@ -582,8 +592,9 @@ def report(results: list[dict[str, Any]], spend: bool) -> str:
         if spend:
             marks = {True: "", False: " (failed)", None: " (?)"}
             runs = ", ".join("+".join(run["ran"]) + marks[run["ok"]] for run in session.get("kit_runs") or []) or "none"
+            waits = f", {session['api_retries']} API retry or rate-limit note(s)" if session.get("api_retries") else ""
             lines.append(f"- took: {r.get('model_calls', '?')} model calls, {_minutes(r.get('wall_seconds'))} wall, "
-                         f"model cost ${r.get('llm_usd', 0):.2f} (gateway meter ${r.get('gateway_usd', 0):.2f})")
+                         f"model cost ${r.get('llm_usd', 0):.2f} (gateway meter ${r.get('gateway_usd', 0):.2f}){waits}")
             lines.append(f"- edit first written at {_minutes(session.get('edit_written_s'))}, first passing check at "
                          f"{_minutes(session.get('check_passed_s'))}, first sheet at {_minutes(session.get('sheet_made_s'))}; "
                          f"kit runs: {runs}")

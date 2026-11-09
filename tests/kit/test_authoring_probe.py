@@ -179,6 +179,13 @@ def test_the_session_is_read_from_the_journal_and_the_transcript(tmp_path: Path)
         journal.append({"at": when[:-8] + f"{int(when[-8:-6]) + 5:02d}+00:00", "kind": "tool_result", "tool_use_id": call_id,
                         "is_error": is_error, "text": text})
         transcript.append({"type": "AssistantMessage", "content": [{"id": call_id, "name": name, "input": tool_input}]})
+    # The journal clips a long result; the verdict of a kit run is read from the whole one.
+    long_report = "WARNING shot-very-short [main[3]]: too brief\n" * 80 + "OK: 29.5 s, 9 shots"
+    assert len(long_report) > 2000
+    next(e for e in journal if e.get("tool_use_id") == "t5")["text"] = long_report[:2000]
+    transcript.append({"type": "UserMessage", "content": [{"tool_use_id": "t5", "content": long_report, "is_error": False}]})
+    transcript.append({"type": "UserMessage", "content": [{"tool_use_id": "t6", "is_error": False, "content": [
+        {"type": "text", "text": "Sheet: work/kit/sheet.jpg (9 frames)"}]}]})
     transcript.append({"type": "TaskStartedMessage", "description": "write the hook scene", "data": {"subagent_type": "composer"}})
     transcript.append({"type": "ResultMessage", "result": "All set.\nREHEARSAL DONE", "usage": {
         "input_tokens": 40, "output_tokens": 9000, "output_tokens_details": {"thinking_tokens": 2500},
