@@ -57,6 +57,21 @@ _UNFINISHED_PROMPT = (
     "directory, reuse it without paying for it again, finish the remaining work, and stop once the "
     "final MP4 and RUN_REPORT.md exist as briefed."
 )
+# The one follow-up a session gets when the job gateway's model-call cap ended it mid-run.
+_WRAP_PROMPT = (
+    "The model-call budget for this production is used up, so this is a short wrap-up session. "
+    "Do not generate any new assets and do not call any paid tool. Assemble the best possible video "
+    "from the assets that already exist in the project, render it with Remotion, export the final MP4 "
+    "under exports/, and write RUN_REPORT.md noting the early wrap-up. If an export already exists, "
+    "verify it and stop."
+)
+_LLM_BUDGET_MARKER = "Claude budget is used up"
+
+
+def _llm_budget_death(exc: BaseException) -> bool:
+    """The boxed CLI exits hard (a 403 it reads as an auth failure) when the job gateway refuses
+    further model calls at its cap; recognize that exit so the run can wrap up instead of failing."""
+    return type(exc).__name__ == "ResultError" and _LLM_BUDGET_MARKER in str(exc)
 
 # Stages in production order, by the tool that marks each one. The job's tool ledger
 # says what really ran, so an agent reading a tool's source or a schema that mentions
@@ -372,7 +387,8 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     llm_provider = "llm-gateway" if llm_upstream else "anthropic"
     gateway_spend = 0.0
 
-    async def run_session(session_prompt: str, session_resume: str | None, session_fork: bool = False) -> RunOutcome:
+    async def run_session(session_prompt: str, session_resume: str | None, session_fork: bool = False,
+                          claude_cap_override: float | None = None) -> RunOutcome:
         from engine.sandbox.box import AgentBox, SandboxUnavailable  # engine.sandbox imports engine.agent
 
         async with contextlib.AsyncExitStack() as stack:
@@ -392,7 +408,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
                         # The SDK caps the CLI's own loop; the gateway backstops anything else.
                         # Behind a custom upstream the CLI cannot price the model, so the
                         # gateway cap IS the enforcement and gets no slack.
-                        claude_cap_usd=claude_cap * (1.0 if llm_upstream else 1.5),
+                        claude_cap_usd=claude_cap_override or claude_cap * (1.0 if llm_upstream else 1.5),
                         cli_switches=switches, llm_upstream=llm_upstream,
                         api_key=(getattr(settings, "agent_llm_upstream_key", None)
                                  if llm_upstream else anthropic_api_key(_repo_root())),
@@ -468,7 +484,20 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
 
     sync_budget()
     ctx.set_stage("agent", "the agent is reading the brief", progress=10)
-    outcome = await run_session(prompt, resume, fork)
+    try:
+        outcome = await run_session(prompt, resume, fork)
+    except Exception as exc:
+        if not _llm_budget_death(exc):
+            raise
+        # The gateway refused further model calls at its cap and the CLI died on the 403. The
+        # paid assets are on disk: resume the same session once, on a small wrap-up allowance,
+        # to assemble and export what exists instead of failing the job.
+        wrap_resume = session_file.read_text(encoding="utf-8").strip() if session_file.exists() else None
+        if not wrap_resume:
+            raise
+        ctx.warn("the model-call budget ran out mid-production; wrapping up with what exists")
+        outcome = await run_session(_WRAP_PROMPT, wrap_resume,
+                                    claude_cap_override=max(1.0, claude_cap * 0.25))
     if outcome.succeeded and not exported():
         # Assets it already paid for are still there: the job's deadline and ledger carry on.
         ctx.warn("the agent stopped before exporting a video; its session was resumed once")
