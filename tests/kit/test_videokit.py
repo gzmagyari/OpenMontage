@@ -204,6 +204,20 @@ def test_a_video_without_a_voice_gets_its_music_cut_and_faded(tmp_path: Path):
         mix.build(tmp_path, total_seconds=5.0)
 
 
+def test_every_font_the_kit_ships_is_a_declared_dependency():
+    import re
+    source = (KIT_DIR / "engine" / "fonts.ts").read_text(encoding="utf-8")
+    package = json.loads((REPO_ROOT / "remotion-composer" / "package.json").read_text(encoding="utf-8"))
+    imported = re.findall(r"from '(@fontsource(?:-variable)?/[^/']+)/(files/[^']+\.woff2)'", source)
+    assert len(imported) >= 8
+    for name, file in imported:
+        version = package["dependencies"].get(name)
+        assert version and version[0].isdigit(), f"{name} must be pinned to an exact version"
+        installed = _MODULES / name
+        if installed.is_dir():  # where the Node modules are installed, the files must really be there
+            assert (installed / file).is_file(), f"{name}/{file}"
+
+
 def test_every_starter_look_is_complete():
     assert {"pop", "editorial"} <= set(stage.looks())
     for name in stage.looks():
@@ -246,6 +260,12 @@ def test_a_small_video_from_init_to_export(tmp_path: Path):
     assert "look-untouched" in untouched.stdout
     tokens = project / "composition" / "src" / "look" / "tokens.ts"
     tokens.write_text(tokens.read_text(encoding="utf-8").replace("#FFD400", "#35E0A1"), encoding="utf-8")
+    # Restyle the type too, with a font the kit ships: a font that fails to load fails the render.
+    look = project / "composition" / "src" / "look" / "look.tsx"
+    styled = look.read_text(encoding="utf-8").replace(
+        "const FONT = tokens.font.display;", "import {fonts as shipped} from '@kit/engine'; const FONT = shipped.anton();")
+    assert "shipped.anton()" in styled
+    look.write_text(styled, encoding="utf-8")
 
     spoken = _kit(project, "voice")
     assert spoken.returncode == 0, spoken.stdout + spoken.stderr

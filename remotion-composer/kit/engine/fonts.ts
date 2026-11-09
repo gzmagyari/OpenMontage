@@ -4,6 +4,17 @@
 // the render then fails "not cleared" (measured upstream, see src/lib/localFonts.ts).
 
 import {cancelRender, continueRender, delayRender} from 'remotion';
+import caveatUrl from '@fontsource-variable/caveat/files/caveat-latin-wght-normal.woff2';
+import interUrl from '@fontsource-variable/inter/files/inter-latin-wght-normal.woff2';
+import montserratUrl from '@fontsource-variable/montserrat/files/montserrat-latin-wght-normal.woff2';
+import antonUrl from '@fontsource/anton/files/anton-latin-400-normal.woff2';
+import archivoBlackUrl from '@fontsource/archivo-black/files/archivo-black-latin-400-normal.woff2';
+import bebasNeueUrl from '@fontsource/bebas-neue/files/bebas-neue-latin-400-normal.woff2';
+import dmSerifDisplayUrl from '@fontsource/dm-serif-display/files/dm-serif-display-latin-400-normal.woff2';
+import poppins500Url from '@fontsource/poppins/files/poppins-latin-500-normal.woff2';
+import poppins700Url from '@fontsource/poppins/files/poppins-latin-700-normal.woff2';
+import poppins800Url from '@fontsource/poppins/files/poppins-latin-800-normal.woff2';
+import poppins900Url from '@fontsource/poppins/files/poppins-latin-900-normal.woff2';
 import playfairItalicUrl from '../../src/fonts/PlayfairDisplay-Italic-latin.woff2';
 import playfairUrl from '../../src/fonts/PlayfairDisplay-latin.woff2';
 import spaceGroteskUrl from '../../src/fonts/SpaceGrotesk-latin.woff2';
@@ -13,7 +24,8 @@ const LATIN =
 
 const loaded = new Set<string>();
 
-/** Registers one font file for the given weights and returns the family name to use in CSS. */
+/** Registers one font file for the given weights and returns the family name to use in CSS.
+ *  A weight is a number ("700") or, for a variable file, a range ("300 700"). */
 export function registerFont(
   family: string,
   url: string,
@@ -41,9 +53,28 @@ export function registerFont(
   return family;
 }
 
-/** Families that ship with the kit. System families (DejaVu, Noto) need no loading. */
+const POPPINS: Record<string, string> = {'500': poppins500Url, '700': poppins700Url, '800': poppins800Url, '900': poppins900Url};
+
+/** Families that ship with the kit (Latin; all under the SIL Open Font License). Call the one a
+ *  look uses once, at the top of the look, and use the returned family name. System families
+ *  (DejaVu, Noto, including the Noto families for other scripts) need no loading. */
 export const fonts = {
-  spaceGrotesk: (weights: string[] = ['400', '500', '700']) => registerFont('Space Grotesk', spaceGroteskUrl, {weights}),
+  // Heavy display
+  anton: () => registerFont('Anton', antonUrl),
+  archivoBlack: () => registerFont('Archivo Black', archivoBlackUrl),
+  bebasNeue: () => registerFont('Bebas Neue', bebasNeueUrl),
+  // Sans, in any weight
+  inter: () => registerFont('Inter', interUrl, {weights: ['100 900']}),
+  montserrat: () => registerFont('Montserrat', montserratUrl, {weights: ['100 900']}),
+  poppins: (weights: string[] = ['500', '700', '800']) => {
+    for (const weight of weights) if (POPPINS[weight]) registerFont('Poppins', POPPINS[weight], {weights: [weight]});
+    return 'Poppins';
+  },
+  spaceGrotesk: (weights: string[] = ['300 700']) => registerFont('Space Grotesk', spaceGroteskUrl, {weights}),
+  // Serif
+  dmSerifDisplay: () => registerFont('DM Serif Display', dmSerifDisplayUrl),
   playfair: (weights: string[] = ['400', '700']) => registerFont('Playfair Display', playfairUrl, {weights}),
   playfairItalic: (weights: string[] = ['400', '700']) => registerFont('Playfair Display', playfairItalicUrl, {weights, style: 'italic'}),
+  // Handwritten
+  caveat: () => registerFont('Caveat', caveatUrl, {weights: ['400 700']}),
 };

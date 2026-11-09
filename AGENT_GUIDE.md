@@ -898,7 +898,10 @@ work/kit/            voice.json, check.json, sheet.jpg, the bundle (all generate
 Recordings are found at `assets/audio/<line id>.mp3` (or `.wav`), or wherever the line's
 `audio` says. `kit voice` writes `assets/audio/voice_<part>.wav`: generate each take from
 that file exactly as it is (no further trimming), so the take carries the audio the timings
-were made from.
+were made from. It prints the list and writes it to `work/kit/voice.json`:
+`lines[].parts[]`, each with `id`, `audio` (the prepared file), `take` (where its take belongs,
+when the line has one), `start` and `dur`. A line over the take limit comes back as two parts,
+so read the takes to film from this file, not from the script.
 
 ## The edit
 
@@ -999,10 +1002,20 @@ Every look names the same roles, so ready-made scenes dress themselves in any lo
 (plus `body`, `weight`) and `shape` (`radius`, `border`, `offset`, `shadow: "hard" | "soft"`).
 Keep those names when restyling; add whatever else the look needs.
 
-Fonts on the render box: DejaVu Sans / Serif / Mono, Noto Sans, Noto Sans Display, Noto
-Serif, Noto Serif Display (regular and bold) and the Noto families for scripts beyond Latin,
-all usable by name. Space Grotesk and Playfair Display ship with the kit: call
-`fonts.spaceGrotesk()` / `fonts.playfair()` from `@kit/engine` once in the look.
+Fonts. The kit ships eleven families, loaded from local files (no network): call the one a
+look uses once at the top of the look and use the name it returns, for example
+`const FONT = fonts.anton();` with `fonts` from `@kit/engine`.
+
+| | |
+|---|---|
+| Heavy display | `anton`, `archivoBlack`, `bebasNeue` |
+| Sans, any weight | `inter`, `montserrat`, `poppins` (500, 700, 800, 900), `spaceGrotesk` |
+| Serif | `dmSerifDisplay`, `playfair`, `playfairItalic` |
+| Handwritten | `caveat` |
+
+Installed on the render box and usable by name without loading: DejaVu Sans / Serif / Mono,
+Noto Sans, Noto Sans Display, Noto Serif, Noto Serif Display (regular and bold), and the Noto
+families for scripts beyond Latin (captions in any script fall back to them by themselves).
 
 ## Ready-made scenes
 

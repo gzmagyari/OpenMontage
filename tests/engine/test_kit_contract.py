@@ -128,6 +128,15 @@ def test_the_reports_reconcile_the_kit_record_and_spend():
     assert "never show cost, margin or multipliers" in pub
 
 
+def test_the_take_skill_agrees_with_the_brief_on_audio_and_the_default_model():
+    # The brief says "read its skill and follow its audio contract": the two must not disagree.
+    skill = _flat(_read(REPO / ".agents" / "skills" / "fal-avatar" / "SKILL.md"))
+    assert '`model: "h3max"` (default)' in skill
+    assert "with `trim_silence` off" in skill and "`kit voice`" in skill
+    assert '"trim_silence": true' not in skill       # the example no longer trims a prepared file
+    assert "$0.056/s at 768P" in skill and "+$0.20/s" in skill
+
+
 def test_take_economics_default_native_with_the_lip_fix_upgrade():
     asset = _read(SPOKE / "asset-director.md")
     assert "### 1a. Take Model Economics (Binding)" in asset

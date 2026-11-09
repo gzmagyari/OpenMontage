@@ -147,7 +147,21 @@ it: one background Bash call for the whole burst, chained inside - TTS first
 takes / b-roll / music / image concurrently as their inputs land, each writing its
 result JSON and cost-log entries exactly as above. While it cooks, restyle the look
 and settle the layout against placeholders with `kit sheet --draft`; collect the
-results at edit time. Before RUN_REPORT.md: every background task completed, every
+results at edit time.
+
+Inside the burst, the takes to film come from `kit voice`, not from the script: it may have
+split a long line into two takes, and it names the prepared audio and the take path of each.
+
+```python
+subprocess.run(["kit", "voice"], check=True, cwd=BASE)          # after every line is spoken
+voice = json.load(open(f"{BASE}/work/kit/voice.json"))
+takes = {part["id"]: {"model": "h3max", "image_path": PORTRAIT, "prompt": PROMPT,
+                      "audio_path": f"{BASE}/{part['audio']}",   # the prepared file, as it is
+                      "output_path": f"{BASE}/{part['take']}"}
+         for line in voice["lines"] for part in line["parts"] if part.get("take")}
+```
+
+Before RUN_REPORT.md: every background task completed, every
 expected output file exists; resubmit only the failed items. Never end the session
 with a background job still running. Never poll it either: launch, work, collect ONCE
 at the stage boundary - repeated status-check calls are wasted turns.
