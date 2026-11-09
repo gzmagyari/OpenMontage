@@ -1,0 +1,3 @@
+#!/bin/sh
+# The video kit's command (lib/videokit). Run it in a job's project directory.
+exec env PYTHONPATH="/app${PYTHONPATH:+:$PYTHONPATH}" python -m lib.videokit "$@"

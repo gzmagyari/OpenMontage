@@ -1,0 +1,6 @@
+{
+  "name": "openmontage-video-kit",
+  "private": true,
+  "type": "module",
+  "description": "The video kit: an edit file in, a rendered video out. Engine, starter looks, ready-made scenes and the kit command."
+}

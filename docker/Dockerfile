@@ -64,8 +64,18 @@ RUN cd remotion-composer \
  && npm ci --no-audit --no-fund \
  && npx remotion browser ensure
 
+# Fonts for scripts beyond Latin: without them captions in Chinese, Japanese, Korean, Arabic,
+# Hebrew, Thai or Devanagari render as empty boxes. A layer of its own, so adding a font never
+# rebuilds the Python and Node layers above.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends fonts-noto-core fonts-noto-cjk \
+ && rm -rf /var/lib/apt/lists/*
+
 # Application code.
 COPY . .
+
+# The video kit's command (lib/videokit), on the PATH an agent box inherits.
+RUN install -m 755 docker/kit /usr/local/bin/kit
 
 # Everything the service writes lives on the /data volume (the code tree is read-only for `app`).
 ENV OPENMONTAGE_PROJECTS_DIR=/data/projects \

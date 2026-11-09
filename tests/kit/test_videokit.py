@@ -1,0 +1,235 @@
+"""The video kit: workspace staging, voice preparation, the mix, and the engine's own tests.
+
+The render test builds a small real video end to end (init, voice, mix, check, sheet,
+render) from synthetic media made by ffmpeg; it runs where the image's Chrome and Node
+modules are available and is skipped elsewhere.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from lib.videokit import KIT_DIR, REPO_ROOT, stage, voice
+
+NODE = shutil.which("node")
+FFMPEG = shutil.which("ffmpeg")
+_MODULES = REPO_ROOT / "remotion-composer" / "node_modules"
+# The renderer's own Linux binary and its Chrome: present in the image, absent in a checkout
+# whose node_modules were installed on another platform.
+CAN_RENDER = bool(NODE and FFMPEG and sys.platform.startswith("linux") and (_MODULES / ".remotion").exists()
+                  and any((_MODULES / "@remotion").glob("compositor-linux-*")))
+
+
+def _ffmpeg(*args: str) -> None:
+    subprocess.run(["ffmpeg", "-y", "-v", "error", *args], check=True, timeout=120)
+
+
+# ---------------------------------------------------------------- the engine's own tests
+
+@pytest.mark.skipif(not NODE, reason="node is not installed")
+def test_the_engine_unit_tests_pass():
+    done = subprocess.run([str(NODE), "--test", str(KIT_DIR / "test" / "engine.test.ts")], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-2000:]
+
+
+# ---------------------------------------------------------------- voice: words and splits
+
+def test_words_fold_the_same_way_the_engine_folds_them():
+    assert voice.norm("Re-renders,") == "rerenders"
+    assert voice.norm("AI.") == "ai"
+    assert voice.norm("·") == ""
+
+
+def test_punctuation_alone_rides_with_the_word_before_it():
+    assert voice.script_tokens("1 click · about 1 min") == ["1", "click ·", "about", "1", "min"]
+
+
+def test_the_script_supplies_the_words_and_the_transcriber_the_clock():
+    tokens = voice.script_tokens("Be honest: it grows 4x bigger, really.")
+    heard = [
+        {"word": "be", "start": 0.0, "end": 0.2}, {"word": "honest", "start": 0.2, "end": 0.6},
+        {"word": "it", "start": 0.8, "end": 0.9}, {"word": "grows", "start": 0.9, "end": 1.3},
+        {"word": "four", "start": 1.3, "end": 1.6}, {"word": "times", "start": 1.6, "end": 1.9},
+        {"word": "bigger", "start": 1.9, "end": 2.4},
+    ]
+    words, share = voice.conform(tokens, heard, total=3.0)
+    assert [w["text"] for w in words] == tokens  # the script's spelling and punctuation survive
+    by = {w["text"]: (w["start"], w["end"]) for w in words}
+    assert by["honest:"] == (0.2, 0.6)
+    assert by["4x"] == (1.3, 1.9)            # heard as "four times": one token over that stretch
+    assert by["bigger,"] == (1.9, 2.4)
+    assert by["really."] == (2.4, 3.0)       # never heard: it takes what is left
+    assert 0.7 < share < 0.8
+    assert all(a["start"] <= b["start"] for a, b in zip(words, words[1:]))
+
+
+def test_a_long_line_is_cut_at_a_sentence_pause():
+    words = [{"text": t, "start": s, "end": s + 0.4} for t, s in [
+        ("Upload", 0.0), ("it.", 1.0), ("Then", 2.0), ("wait,", 6.0), ("bigger.", 8.6),
+        ("Faces,", 9.4), ("fur.", 12.0), ("One", 13.0), ("click.", 16.0)]]
+    assert voice.split_points(words, 14.0) == []
+    cuts = voice.split_points(words, 16.8)
+    assert cuts == [pytest.approx(9.2)]      # after "bigger.", the sentence end nearest the middle
+    with pytest.raises(voice.VoiceError):
+        voice.split_points([{"text": "one", "start": 0.0, "end": 30.0}], 30.0)
+
+
+@pytest.mark.skipif(not FFMPEG, reason="ffmpeg is not installed")
+def test_voice_preparation_lays_the_spine_and_splits_long_lines(tmp_path: Path):
+    project = tmp_path
+    audio = project / "assets" / "audio"
+    audio.mkdir(parents=True)
+    # Line A: 2 s of tone. Line B: 17 s of tone bursts with a pause in the middle.
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=330:duration=2", str(audio / "A.wav"))
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:duration=8.5", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+            "-f", "lavfi", "-i", "sine=frequency=550:duration=8.3", "-filter_complex",
+            "[1:a]atrim=duration=0.2[gap];[0:a][gap][2:a]concat=n=3:v=0:a=1", str(audio / "B.wav"))
+    (project / "composition").mkdir()
+    (project / "composition" / "edit.json").write_text(json.dumps({
+        "voice": {"lines": [{"id": "A", "take": True, "text": "Hello there."},
+                            {"id": "B", "take": True, "text": "First sentence here. Second sentence here."}]},
+        "main": [{"take": "A"}, {"take": "B"}],
+    }), encoding="utf-8")
+
+    def heard(path: Path):
+        if path.stem == "A":
+            return [{"word": "hello", "start": 0.1, "end": 0.8}, {"word": "there", "start": 0.9, "end": 1.8}]
+        return [{"word": "first", "start": 0.2, "end": 2.0}, {"word": "sentence", "start": 2.1, "end": 5.0},
+                {"word": "here", "start": 5.1, "end": 8.3}, {"word": "second", "start": 8.8, "end": 11.0},
+                {"word": "sentence", "start": 11.1, "end": 14.0}, {"word": "here", "start": 14.1, "end": 16.6}]
+
+    made = voice.prepare(project, transcribe=heard)
+    parts = [p for line in made["lines"] for p in line["parts"]]
+    assert [p["id"] for p in parts] == ["A", "B_1", "B_2"]
+    assert [p["take"] for p in parts] == ["assets/video/take_A.mp4", "assets/video/take_B_1.mp4", "assets/video/take_B_2.mp4"]
+    assert all(p["dur"] <= voice.TAKE_LIMIT_SECONDS for p in parts)
+    # The spine: every part starts where the one before it ended.
+    for before, after in zip(parts, parts[1:]):
+        assert after["start"] == pytest.approx(before["start"] + before["dur"], abs=0.002)
+    assert made["voice_end"] == pytest.approx(parts[-1]["start"] + parts[-1]["dur"], abs=0.002)
+    # Words keep the script's spelling, sit inside their part, and the split fell between the sentences.
+    assert [w["text"] for w in parts[1]["words"]] == ["First", "sentence", "here."]
+    assert [w["text"] for w in parts[2]["words"]] == ["Second", "sentence", "here."]
+    for part in parts:
+        assert all(part["start"] - 0.001 <= w["start"] <= part["start"] + part["dur"] + 0.001 for w in part["words"])
+        assert (project / part["audio"]).is_file()
+    assert any("split" in note for note in made["notes"])
+    # The prepared audio is the take tool's own trim of the recording.
+    from tools.avatar.fal_avatar import FalAvatar
+    reference = FalAvatar._trim_silence(audio / "A.wav", tmp_path / "ref.wav")
+    assert voice.duration_of(project / parts[0]["audio"]) == pytest.approx(voice.duration_of(reference), abs=0.002)
+    # A second run with nothing changed reuses the timings.
+    again = voice.prepare(project, transcribe=lambda path: pytest.fail("the unchanged line was timed again"))
+    assert [(p["id"], p["start"], p["dur"]) for l in again["lines"] for p in l["parts"]] == [(p["id"], p["start"], p["dur"]) for p in parts]
+    assert again["lines"][1]["parts"][1]["words"] == made["lines"][1]["parts"][1]["words"]
+
+
+def test_a_missing_recording_says_where_to_put_it(tmp_path: Path):
+    (tmp_path / "composition").mkdir()
+    (tmp_path / "composition" / "edit.json").write_text(json.dumps({"voice": {"lines": [{"id": "A", "text": "Hi."}]}, "main": []}), encoding="utf-8")
+    with pytest.raises(voice.VoiceError, match="assets/audio/A.mp3"):
+        voice.prepare(tmp_path, transcribe=lambda path: [])
+
+
+# ---------------------------------------------------------------- staging
+
+def test_staging_creates_the_workspace_once_and_never_overwrites(tmp_path: Path):
+    made = stage.stage_workspace(tmp_path, look="pop")
+    comp = tmp_path / "composition"
+    for rel in ("package.json", "tsconfig.json", "edit.json", "src/index.ts", "src/scenes.ts", "src/look/tokens.ts", "src/look/look.tsx"):
+        assert (comp / rel).is_file(), rel
+    assert "composition/edit.json" in made and "composition/src/look" in made
+    assert "@kit/engine" in (comp / "src" / "index.ts").read_text(encoding="utf-8")
+    assert json.loads((comp / "tsconfig.json").read_text(encoding="utf-8"))["compilerOptions"]["paths"]["@kit/*"] == [f"{KIT_DIR.as_posix()}/*"]
+    (comp / "edit.json").write_text('{"main": [{"color": "#000", "for": 1}]}', encoding="utf-8")
+    assert stage.stage_workspace(tmp_path) == []
+    assert "color" in (comp / "edit.json").read_text(encoding="utf-8")
+
+
+def test_a_restyled_look_is_not_replaced_without_force(tmp_path: Path):
+    stage.stage_workspace(tmp_path, look="pop")
+    look_dir = tmp_path / "composition" / "src" / "look"
+    assert stage.look_is_untouched(look_dir) == "pop"
+    stage.set_look(tmp_path, "editorial")  # still untouched: switching is free
+    assert stage.look_is_untouched(look_dir) == "editorial"
+    tokens = look_dir / "tokens.ts"
+    tokens.write_text(tokens.read_text(encoding="utf-8").replace("#FFC23D", "#3DDCFF"), encoding="utf-8")
+    assert stage.look_is_untouched(look_dir) is None
+    with pytest.raises(ValueError, match="has been edited"):
+        stage.set_look(tmp_path, "pop")
+    stage.set_look(tmp_path, "pop", force=True)
+    assert stage.look_is_untouched(look_dir) == "pop"
+    with pytest.raises(ValueError, match="no starter look"):
+        stage.set_look(tmp_path, "nope", force=True)
+
+
+def test_every_starter_look_is_complete():
+    assert {"pop", "editorial"} <= set(stage.looks())
+    for name in stage.looks():
+        folder = KIT_DIR / "looks" / name
+        tokens = (folder / "tokens.ts").read_text(encoding="utf-8")
+        assert "export const tokens" in tokens and "export const meta" in tokens
+        # tokens.ts is read by the kit command without a bundler: it may not import anything.
+        assert "import " not in tokens, name
+        assert "export const look" in (folder / "look.tsx").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- end to end
+
+def _kit(project: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-m", "lib.videokit", *args, "--project", str(project)],
+                          cwd=REPO_ROOT, capture_output=True, text=True, timeout=600)
+
+
+@pytest.mark.skipif(not CAN_RENDER, reason="needs the image's Chrome and Node modules (Linux)")
+def test_a_small_video_from_init_to_export(tmp_path: Path):
+    project = tmp_path
+    assert _kit(project, "init", "--look", "pop").returncode == 0
+    (project / "assets" / "audio").mkdir(parents=True)
+    (project / "assets" / "video").mkdir(parents=True)
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=330:duration=2.5", str(project / "assets/audio/A.wav"))
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=220:duration=8", str(project / "assets/audio/music.wav"))
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=540x960:rate=30:duration=4", "-pix_fmt", "yuv420p", str(project / "assets/video/clip.mp4"))
+    edit = {
+        "canvas": {"size": "540x960", "fps": 30, "safe": "tiktok"},
+        "voice": {"lines": [{"id": "A", "text": "A tone stands in for the voice."}]},
+        "music": {"file": "assets/audio/music.wav"},
+        "main": [{"video": "assets/video/clip.mp4", "until": {"word": "stands"}},
+                 {"color": "#203040", "until": {"voice": "end"}, "enter": "slide-up"},
+                 {"video": "assets/video/clip.mp4", "start": 1, "for": 1}],
+        "overlays": [{"tag": "hello", "from": 0.3, "for": 1.2}],
+    }
+    (project / "composition" / "edit.json").write_text(json.dumps(edit), encoding="utf-8")
+
+    untouched = _kit(project, "check", "--draft")
+    assert "look-untouched" in untouched.stdout
+    tokens = project / "composition" / "src" / "look" / "tokens.ts"
+    tokens.write_text(tokens.read_text(encoding="utf-8").replace("#FFD400", "#35E0A1"), encoding="utf-8")
+
+    spoken = _kit(project, "voice")
+    assert spoken.returncode == 0, spoken.stdout + spoken.stderr
+    mixed = _kit(project, "mix")
+    assert mixed.returncode == 0, mixed.stdout + mixed.stderr
+    assert (project / "assets/audio/mix.wav").is_file()
+
+    checked = _kit(project, "check")
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    sheet = _kit(project, "sheet")
+    assert sheet.returncode == 0, sheet.stdout + sheet.stderr
+    assert (project / "work/kit/sheet.jpg").is_file()
+
+    rendered = _kit(project, "render", "--name", "smoke")
+    assert rendered.returncode == 0, rendered.stdout + rendered.stderr
+    out = project / "exports" / "smoke.mp4"
+    probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,color_space:format=duration",
+                                       "-of", "json", str(out)], capture_output=True, text=True, check=True).stdout)
+    video = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    assert (video["codec_name"], video["width"], video["height"], video["color_space"]) == ("h264", 540, 960, "bt709")
+    assert any(s["codec_type"] == "audio" for s in probe["streams"])
+    assert float(probe["format"]["duration"]) == pytest.approx(voice.duration_of(project / "assets/audio/voice_A.wav") + 1.0, abs=0.2)
