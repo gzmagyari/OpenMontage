@@ -125,6 +125,17 @@ Rules:
   follows an approved sample. Never wait for one take to finish before SUBMITTING the
   next.
 
+### Background burst (stage overlap)
+
+At script lock, launch the batch above with `run_in_background` instead of waiting on
+it: one background Bash call for the whole burst, chained inside - TTS first
+(concurrent), then takes / b-roll / music / image concurrently as their inputs land,
+each writing its result JSON and cost-log entries exactly as above. Do the LLM-side
+prep (captions structure, edit plan, composition work) while it cooks and collect the
+results at edit time. Before RUN_REPORT.md: every background task completed, every
+expected output file exists; resubmit only the failed items. Never end the session
+with a background job still running.
+
 ## No-Avatar Path
 
 When the EP has triggered a narration-over-graphics pivot (neither `talking_head` nor `lip_sync` available), skip avatar generation entirely and produce a graphics-driven asset kit instead:

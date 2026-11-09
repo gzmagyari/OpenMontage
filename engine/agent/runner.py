@@ -298,6 +298,32 @@ async def _write_provider_menu(project_dir: Path, warn: Any) -> None:
         warn(f"provider-menu preflight file skipped: {exc}")
 
 
+def _stage_composition_workspace(project_dir: Path, warn: Any) -> None:
+    """Boilerplate the director otherwise rebuilds by hand every run: the composition dir,
+    the node_modules link and the base configs from remotion-composer/ (AGENT_GUIDE
+    "Latency Rules" sends the agent here instead). Structure only, never content. Skipped
+    when composition/ already exists (resume, revision), and a failure only warns - the
+    agent builds the workspace itself when it is missing."""
+    comp = project_dir / "composition"
+    if comp.exists():
+        return
+    try:
+        source = _repo_root() / "remotion-composer"
+        (comp / "src").mkdir(parents=True, exist_ok=True)
+        (comp / "public").mkdir(parents=True, exist_ok=True)
+        for name in ("package.json", "tsconfig.json"):
+            if (source / name).is_file():
+                shutil.copy2(source / name, comp / name)
+        modules = source / "node_modules"
+        if modules.exists():
+            try:
+                (comp / "node_modules").symlink_to(modules)
+            except OSError as exc:
+                warn(f"composition workspace: node_modules link skipped: {exc}")
+    except Exception as exc:
+        warn(f"composition workspace pre-stage skipped: {exc}")
+
+
 async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
                          resume: str | None, fork: bool = False, exports_baseline: dict[str, int] | None = None,
                          cost_log_baseline: list[tuple[str, float]] | None = None,
@@ -310,6 +336,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     (agent_dir / "project_dir.txt").write_text(str(project_dir), encoding="utf-8")
     if not resume:
         await _write_provider_menu(project_dir, ctx.warn)
+        _stage_composition_workspace(project_dir, ctx.warn)
     stages = StageTracker()
     model = getattr(settings, "agent_model", "claude-haiku-5-5")
     effort = getattr(settings, "agent_effort", None)
