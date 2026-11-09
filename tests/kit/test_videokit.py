@@ -69,6 +69,18 @@ def test_the_script_supplies_the_words_and_the_transcriber_the_clock():
     assert all(a["start"] <= b["start"] for a, b in zip(words, words[1:]))
 
 
+def test_scripts_without_spaces_are_cut_into_words_and_timed_by_character():
+    tokens = voice.script_tokens("今日は良い天気です。")
+    assert "".join(tokens) == "今日は良い天気です。"
+    assert 2 <= len(tokens) <= 9 and tokens[-1].endswith("。")  # the full stop rides with the last word
+    # The transcriber cuts the same sentence differently (here: in two pieces).
+    heard = [{"word": "今日は良い", "start": 0.0, "end": 1.0}, {"word": "天気です", "start": 1.0, "end": 2.0}]
+    words, share = voice.conform(tokens, heard, total=2.2)
+    assert [w["text"] for w in words] == tokens and share == 1.0
+    assert words[0]["start"] == 0.0 and words[-1]["end"] == 2.0
+    assert all(a["start"] <= b["start"] and a["end"] <= b["end"] + 1e-9 for a, b in zip(words, words[1:]))
+
+
 def test_a_long_line_is_cut_at_a_sentence_pause():
     words = [{"text": t, "start": s, "end": s + 0.4} for t, s in [
         ("Upload", 0.0), ("it.", 1.0), ("Then", 2.0), ("wait,", 6.0), ("bigger.", 8.6),
@@ -167,6 +179,29 @@ def test_a_restyled_look_is_not_replaced_without_force(tmp_path: Path):
     assert stage.look_is_untouched(look_dir) == "pop"
     with pytest.raises(ValueError, match="no starter look"):
         stage.set_look(tmp_path, "nope", force=True)
+
+
+def test_the_ready_made_scenes_are_listed_where_the_checker_reads_them():
+    import re
+    registry = re.search(r"builtinScenes: SceneRegistry = \{([^}]*)\}", (KIT_DIR / "scenes" / "index.ts").read_text(encoding="utf-8"))
+    listed = re.search(r"BUILTIN_SCENES = \[([^\]]*)\]", (KIT_DIR / "engine" / "types.ts").read_text(encoding="utf-8"))
+    assert registry and listed
+    assert sorted(n.strip() for n in registry.group(1).split(",")) == sorted(n.strip(" '") for n in listed.group(1).split(","))
+
+
+@pytest.mark.skipif(not FFMPEG, reason="ffmpeg is not installed")
+def test_a_video_without_a_voice_gets_its_music_cut_and_faded(tmp_path: Path):
+    from lib.videokit import mix
+    (tmp_path / "composition").mkdir()
+    (tmp_path / "assets").mkdir()
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=220:duration=12", str(tmp_path / "assets" / "bed.wav"))
+    (tmp_path / "composition" / "edit.json").write_text(json.dumps({"music": {"file": "assets/bed.wav"}, "main": [{"color": "#000", "for": 5}]}), encoding="utf-8")
+    made = mix.build(tmp_path, total_seconds=5.0)
+    assert made["voice_parts"] == 0 and made["music"] == "assets/bed.wav"
+    assert voice.duration_of(tmp_path / "assets/audio/mix.wav") == pytest.approx(5.0, abs=0.05)
+    (tmp_path / "composition" / "edit.json").write_text(json.dumps({"main": [{"color": "#000", "for": 5}]}), encoding="utf-8")
+    with pytest.raises(mix.MixError, match="nothing to mix"):
+        mix.build(tmp_path, total_seconds=5.0)
 
 
 def test_every_starter_look_is_complete():

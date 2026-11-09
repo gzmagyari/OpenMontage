@@ -23,8 +23,8 @@ const UNSPACED_RULES: Partial<CaptionRules> = {maxWords: 14, maxChars: 12};
 export type TimedWord = {text: string; start: number; end: number; part?: string};
 export type GroupSec = {words: TimedWord[]; start: number; end: number; visibleEnd: number; spaced: boolean; rtl: boolean};
 
-const SENT_END = /[.!?…。！？]["')\]」』]?$/;
-const SOFT_END = /[,:;—–、，-]["')\]]?$/;
+const SENT_END = /[.!?\u2026\u3002\uff01\uff1f]["')\]\u300d\u300f]?$/;
+const SOFT_END = /[,:;\u2014\u2013\u3001\uff0c-]["')\]]?$/;
 
 export function groupWords(input: TimedWord[], rules: Partial<CaptionRules>, maxVisibleEnd: number): GroupSec[] {
   const words = [...input].sort((a, b) => a.start - b.start).filter((w) => w.text.trim().length > 0);

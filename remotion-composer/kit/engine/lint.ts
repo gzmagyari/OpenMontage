@@ -32,7 +32,7 @@ export function lintResolved(resolved: Resolved, edit: Edit, meta: LookMeta = {}
   else if (expect !== resolved.durationInFrames) d('error', 'coverage-gap', `The main sequence ends at ${sec(expect)} s but the video runs ${sec(resolved.durationInFrames)} s.`);
 
   const zoneOf = (o: Resolved['overlays'][number]): ZoneName =>
-    o.zone ?? (o.kind === 'card' ? meta.cardZones?.[o.name] : undefined) ?? 'upper';
+    o.zone ?? (o.kind === 'card' ? meta.cardZones?.[o.name] : undefined) ?? (o.kind === 'text' ? 'center' : 'upper');
 
   for (const o of resolved.overlays) {
     if (o.kind === 'tag' || o.kind === 'text') {

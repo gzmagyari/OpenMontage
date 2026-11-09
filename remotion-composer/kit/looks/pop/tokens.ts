@@ -15,7 +15,7 @@ export const tokens = {
     display: '"DejaVu Sans", "Helvetica Neue", "Arial Black", Arial, sans-serif',
     weight: 800,
   },
-  shape: {border: 8, radius: 44, offset: 14},
+  shape: {border: 8, radius: 44, offset: 14, shadow: 'hard' as const},
   caption: {maxSize: 86},
 };
 

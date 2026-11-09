@@ -34,7 +34,7 @@ work/kit/            voice.json, check.json, sheet.jpg, the bundle (all generate
 | `kit voice` | After the lines are spoken: tighten each recording, time every word of the script, split a line that is too long for one take, lay the lines end to end. |
 | `kit check [--draft]` | Check the edit, the timeline and the look. `--draft` accepts files that are still generating. |
 | `kit sheet [--draft]` | One sheet of the telling frames (about 8 s), plus layout findings measured in the browser. |
-| `kit mix` | The soundtrack: voice on the spine, music under it, -14 LUFS. |
+| `kit mix` | The soundtrack: voice on the spine, music under it (or the music alone when there is no voice), cut to the video's length and faded out, -14 LUFS. |
 | `kit render [--name NAME]` | The final video in `exports/`, tagged BT.709, verified. Refuses while anything is missing. |
 
 Recordings are found at `assets/audio/<line id>.mp3` (or `.wav`), or wherever the line's
@@ -112,8 +112,10 @@ Layouts:
 
 `{"tag": "text"}`, `{"card": "name", "props": {...}}`, `{"text": "..."}` or
 `{"scene": "Name", "props": {...}}`, each with `from` and `until` (or `for`) and an optional
-`zone` (`upper`, `center`, `lower`, `full`). Which cards exist and what props they take is
-the look's business: read `src/look/look.tsx`.
+`zone` (`upper`, `center`, `lower`, `full`). A tag sits in the upper zone, a `text` (a large
+statement; "
+" starts a new line) in the centre. Which cards exist and what props they
+take is the look's business: read `src/look/look.tsx`.
 
 ### captions
 
@@ -129,17 +131,49 @@ Cards: `hook`, `cta`, `end`.
 
 `editorial` - ink, paper chips and one signal colour; calm entrances. Cards: `end`.
 
-A look exports `look` (see `engine/context.tsx` for the shape: `Caption`, `Tag`, `cards`,
-optional `Finish`, `Frame`, `parts`, `motion`) and, in `tokens.ts`, `tokens` and `meta`
-(card zones, caption grouping, the colour pairs the legibility check reads). `tokens.ts`
-must not import anything: the kit command reads it without a bundler.
+A look exports `look` (see `engine/context.tsx` for the shape: `Caption`, `Tag`, `Text`,
+`cards`, optional `Finish`, `Frame`, `parts`, `motion`) and, in `tokens.ts`, `tokens` and
+`meta` (card zones, caption grouping, the colour pairs the legibility check reads).
+`tokens.ts` must not import anything: the kit command reads it without a bundler.
+
+Every look names the same roles, so ready-made scenes dress themselves in any look:
+`color.ink`, `color.paper`, `color.accent` (plus `negative`, `positive`), `font.display`
+(plus `body`, `weight`) and `shape` (`radius`, `border`, `offset`, `shadow: "hard" | "soft"`).
+Keep those names when restyling; add whatever else the look needs.
+
+Fonts on the render box: DejaVu Sans / Serif / Mono, Noto Sans, Noto Sans Display, Noto
+Serif, Noto Serif Display (regular and bold) and the Noto families for scripts beyond Latin,
+all usable by name. Space Grotesk and Playfair Display ship with the kit: call
+`fonts.spaceGrotesk()` / `fonts.playfair()` from `@kit/engine` once in the look.
 
 ## Ready-made scenes
+
+Each fills the frame as a main item; `ListReveal`, `QuoteCard` and `StatCount` also work as
+overlays (`{"scene": "...", "zone": "upper"}` over footage). `backdrop` is a colour, the path
+of a picture or clip, or `{"image" | "video" | "color", "blur", "dim"}`.
 
 `BeforeAfter` - two pictures and a divider that wipes from one to the other. Props: `pair`
 ("refs/gran" means `refs/gran_before.jpg` and `refs/gran_after.jpg`) or `before` + `after`;
 `labels`; `afterSide`; `wipe` (`start`, `seconds`, `from`, `to`); `zoom`; `frame: "card"` for
 landscape pictures in a tall video. The handle and labels are drawn by the look.
+
+`KineticText` - big words that arrive one after another; a statement that needs no footage.
+Props: `text` ("\n" starts a line) or `lines`; `emphasis` (words in the accent colour);
+`backdrop`; `align`; `size`; `uppercase`.
+
+`ScreenDemo` - a screenshot or screen recording in a browser or phone frame, with a camera, a
+cursor, clicks and outlined areas. Props: `image` or `video`; `frame` (`browser`, `phone`,
+`plain`); `url`; `steps`, each `{"at": seconds, "zoom", "focus": [x, y], "highlight":
+[x, y, w, h], "cursor": [x, y], "click", "label"}` with positions as fractions of the screen
+content.
+
+`ListReveal` - a short list whose points arrive one by one. Props: `items`; `title`; `at`
+(seconds into the shot, or the word the voice says as each point lands); `numbered`.
+
+`QuoteCard` - what a customer said. Props: `quote`, `name`, `role`, `stars`, `avatar`.
+
+`StatCount` - a number that counts up. Props: `value`, `prefix`, `suffix`, `decimals`,
+`label`, `seconds`.
 
 ## Your own scenes
 
@@ -158,6 +192,10 @@ export const Orbit: React.FC<{image: string}> = ({image}) => {
 
 Register it in `src/scenes.ts` (`export const scenes = {Orbit};`) and name it in the edit.
 Media paths in props are project-relative and are staged and checked like any other file.
+`useDress()` gives the look's colours, type and surface style, `surface(d)` a card in the
+look's manner, `Backdrop` what sits behind. A scene must never be empty on its first frame
+(a video's first frame has to work on its own): start its entrance `HEAD_START` frames in,
+as the ready-made scenes do.
 
 ## What `check` and `sheet` look for
 

@@ -7,7 +7,7 @@ import {ClipView, Enter, Placeholder} from './stage.tsx';
 import type {Rect, Resolved, ResolvedOverlay, ZoneName} from './types.ts';
 
 const zoneOf = (o: ResolvedOverlay, look: Look): ZoneName =>
-  o.zone ?? (o.kind === 'card' ? look.cardZones?.[o.name] : undefined) ?? 'upper';
+  o.zone ?? (o.kind === 'card' ? look.cardZones?.[o.name] : undefined) ?? (o.kind === 'text' ? 'center' : 'upper');
 
 const OverlayView: React.FC<{overlay: ResolvedOverlay}> = ({overlay}) => {
   const {look, resolved, scenes} = useKit();
@@ -34,9 +34,11 @@ const OverlayView: React.FC<{overlay: ResolvedOverlay}> = ({overlay}) => {
     }
   }
   return (
-    <div data-kit-overlay={overlay.id} data-kit-zone={zoneOf(overlay, look)} style={{position: 'absolute', inset: 0}}>
-      {body}
-    </div>
+    <ShotContext.Provider value={{id: overlay.id, frames, from: overlay.from}}>
+      <div data-kit-overlay={overlay.id} data-kit-zone={zoneOf(overlay, look)} style={{position: 'absolute', inset: 0}}>
+        {body}
+      </div>
+    </ShotContext.Provider>
   );
 };
 

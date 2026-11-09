@@ -83,6 +83,28 @@ const Tag: React.FC<TagProps> = ({text, props, zone, frames}) => {
   );
 };
 
+// ---- text: a large statement in the middle of the frame ("\n" starts a new line)
+
+const Text: React.FC<TagProps> = ({text, props, zone, frames}) => {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const u = useUnit();
+  const lines = text.split('\n');
+  const longest = lines.reduce((a, b) => (b.length > a.length ? b : a), '');
+  const size = Math.min(num(props.size, 124) * u, zone.w / (0.68 * Math.max(1, longest.length)));
+  const pin = spring({frame, fps, config: {damping: 11, stiffness: 180, mass: 0.6}});
+  const pout = frame > frames ? clamp01((frame - frames) / 6) : 0;
+  return (
+    <div style={{position: 'absolute', left: zone.x, top: zone.y, width: zone.w, height: zone.h, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', transform: `scale(${(0.8 + 0.2 * pin) * (1 - pout * 0.4)})`, opacity: Math.min(1, pin * 1.5) * (1 - pout)}}>
+      {lines.map((line, i) => (
+        <div key={i} style={{fontFamily: FONT, fontWeight: WEIGHT, fontSize: size, lineHeight: 1.08, color: str(props.color, C.paper), WebkitTextStroke: `${Math.round(size * 0.13)}px ${C.ink}`, paintOrder: 'stroke fill', textShadow: `0 ${size * 0.07}px 0 ${C.ink}, 0 ${size * 0.14}px ${size * 0.3}px rgba(0,0,0,0.55)`, letterSpacing: -1, textAlign: 'center', whiteSpace: 'nowrap'}}>
+          {line}
+        </div>
+      ))}
+    </div>
+  );
+};
+
 // ---- captions: a short phrase, the spoken word in the accent colour with a small pop
 
 const Caption: React.FC<CaptionProps> = ({group, active, localFrame, frame, zone}) => {
@@ -348,6 +370,7 @@ export const look: Look = {
   background: C.ink,
   Caption,
   Tag,
+  Text,
   cards: {hook: HookCard, cta: CtaCard, end: EndCard},
   cardZones: {hook: 'upper', cta: 'upper', end: 'full'},
   Finish: Vignette,

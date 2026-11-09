@@ -8,7 +8,7 @@ import {lintResolved} from '../engine/lint.ts';
 import {estimateVoice, resolveEdit} from '../engine/resolve.ts';
 import {validateEdit} from '../engine/schema.ts';
 import type {Edit, Voice} from '../engine/types.ts';
-import {findPhrase, isRtl, isUnspaced, norm} from '../engine/words.ts';
+import {findPhrase, isRtl, isUnspaced, norm, tokenize} from '../engine/words.ts';
 import {zonesFor} from '../engine/zones.ts';
 
 /** Three lines; line B was too long for one take and is spoken in two parts. Six words a second. */
@@ -207,6 +207,21 @@ test('scripts without spaces and right-to-left scripts are recognised', () => {
   assert.equal(isRtl('مرحبا بالعالم'), true);
   const groups = groupWords('今日 は 良い 天気 です 明日 も 晴れ ます'.split(' ').map((t, i) => ({text: t, start: i * 0.3, end: i * 0.3 + 0.25})), {}, 99);
   assert.ok(groups.length >= 2 && groups.every((g) => g.spaced === false));
+});
+
+test('a script without spaces is cut into words, and its estimate uses them', () => {
+  assert.deepEqual(tokenize('Two words.'), ['Two', 'words.']);
+  const words = tokenize('今日は良い天気です。');
+  assert.equal(words.join(''), '今日は良い天気です。');
+  assert.ok(words.length >= 3 && words[words.length - 1].endsWith('。'));
+  const e = edit();
+  e.voice = {lines: [{id: 'A', text: '今日は良い天気です。明日も晴れます。'}]};
+  e.main = [{color: '#000', until: {word: '明日'}}, {color: '#111', until: {voice: 'end'}}];
+  e.overlays = [];
+  const r = resolveEdit({edit: e});
+  assert.deepEqual(errors(r.diagnostics), []);
+  assert.equal(r.main.length, 2);
+  assert.ok(r.captions.groups.length >= 1 && r.captions.groups.every((g) => g.spaced === false));
 });
 
 test('the edit is checked before anything is resolved', () => {

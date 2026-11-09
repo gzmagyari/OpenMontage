@@ -58,7 +58,22 @@ export function suggestions(words: SpokenWord[], phrase: string, limit = 5): str
 
 /** True for scripts written without spaces between words (Chinese, Japanese, Thai, ...). */
 export const isUnspaced = (text: string): boolean =>
-  /[぀-ヿ㐀-䶿一-鿿฀-๿ក-៿]/u.test(text);
+  /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\u0e00-\u0e7f\u1780-\u17ff]/u.test(text);
+
+/** A script's words as captions show them. Text written with spaces splits on them; text
+ *  written without (Chinese, Japanese, Thai, ...) is segmented into words, and punctuation
+ *  rides with the word before it. */
+export function tokenize(text: string): string[] {
+  if (!isUnspaced(text)) return text.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  for (const piece of new Intl.Segmenter(undefined, {granularity: 'word'}).segment(text)) {
+    const s = piece.segment.trim();
+    if (!s) continue;
+    if (piece.isWordLike || !out.length) out.push(s);
+    else out[out.length - 1] += s;
+  }
+  return out;
+}
 
 /** True for right-to-left scripts (Arabic, Hebrew, ...). */
-export const isRtl = (text: string): boolean => /[֐-ࣿיִ-﷿ﹰ-ﻼ]/u.test(text);
+export const isRtl = (text: string): boolean => /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]/u.test(text);

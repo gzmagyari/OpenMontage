@@ -59,12 +59,32 @@ const Tag: React.FC<TagProps> = ({text, props, zone, frames}) => {
   const out = frame > frames ? clamp01((frame - frames) / 6) : 0;
   return (
     <div style={{position: 'absolute', inset: 0, opacity: 1 - out}}>
-      <Chip label={text} dot={str(props.dot, C.signal)} delay={4} style={{left: '50%', top: zone.y + 50 * u, transform: 'translateX(-50%)'}} />
+      <Chip label={text} dot={str(props.dot, C.accent)} delay={4} style={{left: '50%', top: zone.y + 50 * u, transform: 'translateX(-50%)'}} />
     </div>
   );
 };
 
-// ---- captions: a phrase on a dark plate; spoken words light up, the current one in the signal colour
+// ---- text: a large statement on a dark plate ("\n" starts a new line)
+
+const Text: React.FC<TagProps> = ({text, props, zone, frames}) => {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const u = useUnit();
+  const lines = text.split('\n');
+  const longest = lines.reduce((a, b) => (b.length > a.length ? b : a), '');
+  const size = Math.min((typeof props.size === 'number' ? props.size : 104) * u, (zone.w - 80 * u) / (0.56 * Math.max(1, longest.length)));
+  const rise = spring({frame, fps, config: {damping: 18, stiffness: 150}});
+  const out = frame > frames ? clamp01((frame - frames) / 6) : 0;
+  return (
+    <div style={{position: 'absolute', left: zone.x, top: zone.y, width: zone.w, height: zone.h, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: rise * (1 - out), transform: `translateY(${(1 - rise) * 30 * u}px)`}}>
+      <div style={{padding: `${26 * u}px ${40 * u}px`, borderRadius: 28 * u, background: 'rgba(13,13,15,0.62)', fontFamily: FONT, fontWeight: 700, fontSize: size, lineHeight: 1.12, letterSpacing: -1.5 * u, color: str(props.color, C.paper), textAlign: 'center', whiteSpace: 'nowrap'}}>
+        {lines.map((line, i) => <div key={i}>{line}</div>)}
+      </div>
+    </div>
+  );
+};
+
+// ---- captions: a phrase on a dark plate; spoken words light up, the current one in the accent colour
 
 const Caption: React.FC<CaptionProps> = ({group, active, localFrame, frame, zone}) => {
   const u = useUnit();
@@ -93,7 +113,7 @@ const Caption: React.FC<CaptionProps> = ({group, active, localFrame, frame, zone
         }}
       >
         {group.words.map((w, i) => (
-          <span key={i} style={{color: i === active ? C.signal : C.paper, opacity: frame >= w.from ? 1 : 0.55, textShadow: '0 3px 12px rgba(0,0,0,0.45)'}}>
+          <span key={i} style={{color: i === active ? C.accent : C.paper, opacity: frame >= w.from ? 1 : 0.55, textShadow: '0 3px 12px rgba(0,0,0,0.45)'}}>
             {w.text}
           </span>
         ))}
@@ -105,7 +125,7 @@ const Caption: React.FC<CaptionProps> = ({group, active, localFrame, frame, zone
 // ---- cards
 
 /** End card: the lower half darkens and the name, a line, the button and the address rise in turn.
- *  props: title, accent (part of the title in the signal colour), sub, button, domain. */
+ *  props: title, accent (part of the title in the accent colour), sub, button, domain. */
 const EndCard: React.FC<CardProps> = ({props}) => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
@@ -126,7 +146,7 @@ const EndCard: React.FC<CardProps> = ({props}) => {
           {at >= 0 ? (
             <>
               {title.slice(0, at)}
-              <span style={{color: C.signal}}>{accent}</span>
+              <span style={{color: C.accent}}>{accent}</span>
               {title.slice(at + accent.length)}
             </>
           ) : title}
@@ -141,7 +161,7 @@ const EndCard: React.FC<CardProps> = ({props}) => {
               top: 1430 * u,
               padding: `${30 * u}px ${56 * u}px`,
               borderRadius: 999,
-              background: C.signal,
+              background: C.accent,
               color: C.ink,
               fontSize: 50 * u,
               fontWeight: 700,
@@ -192,7 +212,7 @@ const BeforeAfterChrome: React.FC<ChromeProps> = ({d, afterSide, labels, labelIn
       >
         {'‹ ›'}
       </div>
-      {labels ? <Chip label={labels.after} dot={C.signal} style={{[afterSide]: labelInset, top: labelTop}} /> : null}
+      {labels ? <Chip label={labels.after} dot={C.accent} style={{[afterSide]: labelInset, top: labelTop}} /> : null}
       {labels ? <Chip label={labels.before} dot={C.negative} style={{[beforeSide]: labelInset, top: labelTop}} /> : null}
     </>
   );
@@ -210,6 +230,7 @@ export const look: Look = {
   background: C.ink,
   Caption,
   Tag,
+  Text,
   cards: {end: EndCard},
   cardZones: {end: 'full'},
   Frame,

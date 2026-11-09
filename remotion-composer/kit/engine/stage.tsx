@@ -122,7 +122,7 @@ const DefaultFrame: React.FC<{children: React.ReactNode; style?: React.CSSProper
 
 const LayoutView: React.FC<{layout: ResolvedLayout; frames: number}> = ({layout, frames}) => {
   const {width, height} = useVideoConfig();
-  const {look} = useKit();
+  const {look, resolved} = useKit();
   const Frame = look.Frame ?? DefaultFrame;
   const cell = (clip: ResolvedClip, style: React.CSSProperties, key?: number) => (
     <div key={key} style={{position: 'absolute', overflow: 'hidden', ...style}}>
@@ -164,7 +164,8 @@ const LayoutView: React.FC<{layout: ResolvedLayout; frames: number}> = ({layout,
     const [v, hz] = layout.corner.split('-');
     const pos: React.CSSProperties = {
       position: 'absolute', width: w, height: h,
-      ...(v === 'top' ? {top: height * 0.085} : {bottom: height * 0.2}),
+      // A bottom inset sits just above the captions when there are any.
+      ...(v === 'top' ? {top: height * 0.085} : {bottom: resolved.captions.enabled ? height - resolved.zones[resolved.captions.zone].y + height * 0.012 : height * 0.2}),
       ...(hz === 'right' ? {right: margin + width * 0.1} : {left: margin}),
     };
     return (

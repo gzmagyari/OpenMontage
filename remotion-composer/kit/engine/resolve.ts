@@ -8,7 +8,7 @@ import type {
 } from './types.ts';
 import {MIN_ITEM_FRAMES, TAKE_LIMIT_SECONDS} from './types.ts';
 import {groupWords, takePhrases, timeGroups, type CaptionRules, type GroupSec} from './captions.ts';
-import {findPhrase, occurrences, suggestions, type SpokenWord} from './words.ts';
+import {findPhrase, isUnspaced, occurrences, suggestions, tokenize, type SpokenWord} from './words.ts';
 import {parseSize, safeArea, zonesFor} from './zones.ts';
 
 export type MediaInfo = {exists: boolean; duration?: number};
@@ -28,6 +28,8 @@ const EPS = 1e-6;
 // Spoken characters per second, measured on three delivered lines of one production video (range
 // 12.8 to 13.6). Only used before real timings exist.
 const CHARS_PER_SECOND = 13.4;
+// Scripts without spaces pack a syllable or a word into each character.
+const UNSPACED_CHARS_PER_SECOND = 6.5;
 
 const ENTER_FRAMES: Record<string, number> = {fade: 8, wipe: 8, flash: 4};
 const DEFAULT_ENTER_FRAMES = 6;
@@ -61,8 +63,8 @@ export function estimateVoice(edit: Edit): Voice {
   let cursor = 0;
   for (const line of edit.voice?.lines ?? []) {
     const text = String(line.text ?? '').trim();
-    const tokens = text.split(/\s+/).filter(Boolean);
-    const dur = Math.max(0.6, text.length / CHARS_PER_SECOND);
+    const tokens = tokenize(text);
+    const dur = Math.max(0.6, text.length / (isUnspaced(text) ? UNSPACED_CHARS_PER_SECOND : CHARS_PER_SECOND));
     const weights = tokens.map((t) => t.length + 1 + (/[.!?]$/.test(t) ? 3 : /[,;:]$/.test(t) ? 1.5 : 0));
     const total = weights.reduce((a, b) => a + b, 0) || 1;
     let t = cursor;

@@ -181,4 +181,4 @@ export type Resolved = {
 
 export const MIN_ITEM_FRAMES = 4;
 export const TAKE_LIMIT_SECONDS = 14.5;
-export const BUILTIN_SCENES = ['BeforeAfter'];
+export const BUILTIN_SCENES = ['BeforeAfter', 'KineticText', 'ListReveal', 'QuoteCard', 'ScreenDemo', 'StatCount'];

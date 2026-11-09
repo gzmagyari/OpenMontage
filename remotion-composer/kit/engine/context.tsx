@@ -22,10 +22,20 @@ export type CardProps = {props: Record<string, unknown>; zone: Rect; frames: num
 
 export type SpringFeel = {damping: number; stiffness: number; mass: number};
 
+/** The roles every look names, so ready-made scenes can dress themselves in any look.
+ *  A look may carry more (its own caption sizes, extra colours, ...). */
+export type LookTokens = {
+  color: {ink: string; paper: string; accent: string; negative?: string; positive?: string; [name: string]: string | undefined};
+  font: {display: string; body?: string; weight?: number; [name: string]: string | number | undefined};
+  /** `shadow: "hard"` is an offset block shadow with a border; "soft" a drop shadow. Sizes are for a 1080-wide frame. */
+  shape?: {radius?: number; border?: number; offset?: number; shadow?: 'hard' | 'soft' | 'none'};
+  [group: string]: unknown;
+};
+
 export type Look = {
   name: string;
   /** Colours, type and shape: the first thing a job restyles. */
-  tokens: Record<string, unknown>;
+  tokens: LookTokens;
   background?: string;
   Caption: React.FC<CaptionProps>;
   Tag: React.FC<TagProps>;
@@ -61,22 +71,25 @@ export type ShotValue = {id: string; frames: number; from: number};
 export const ShotContext = React.createContext<ShotValue>({id: '', frames: 1, from: 0});
 export const useShot = (): ShotValue => React.useContext(ShotContext);
 
-/** The frame (local to the current shot) at which the voice says a word, or null. */
-export const useWordFrame = (word: string, nth = 1): number | null => {
-  const {resolved} = useKit();
-  const shot = useShot();
-  const want = word.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+const fold = (s: string): string => s.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+
+/** The frame, counted from `from`, at which the voice next says a word; null when it does not. */
+export const wordFrame = (resolved: Resolved, from: number, word: string, nth = 1): number | null => {
+  const want = fold(word);
   let seen = 0;
   for (const group of resolved.captions.groups) {
     for (const w of group.words) {
-      if (w.text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '') === want && w.from >= shot.from) {
+      if (fold(w.text) === want && w.from >= from) {
         seen += 1;
-        if (seen === nth) return w.from - shot.from;
+        if (seen === nth) return w.from - from;
       }
     }
   }
   return null;
 };
+
+/** The frame (local to the current shot or overlay) at which the voice says a word, or null. */
+export const useWordFrame = (word: string, nth = 1): number | null => wordFrame(useKit().resolved, useShot().from, word, nth);
 
 /** Extra frames an overlay stays mounted after its end, for its exit animation. */
 export const EXIT_FRAMES = 8;

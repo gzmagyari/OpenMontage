@@ -28,6 +28,8 @@ _SENTENCE_END = re.compile(r"[.!?…。！？][\"')\]]?$")
 _SOFT_END = re.compile(r"[,:;—–、，][\"')\]]?$")
 
 Transcribe = Callable[[Path], list[dict[str, Any]]]
+# Scripts written without spaces between words: the engine's isUnspaced, same ranges.
+_UNSPACED = re.compile("[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\u0e00-\u0e7f\u1780-\u17ff]")
 
 
 class VoiceError(Exception):
@@ -69,9 +71,36 @@ def whisper_words(model_size: str = "base", language: str | None = None, work_di
     return run
 
 
+def _segment(text: str) -> list[str]:
+    """Words of a script written without spaces, from the engine's own tokenizer (one
+    definition for the estimate and for the real timings). Per character when Node is missing."""
+    from lib.videokit import KIT_DIR
+    program = ("import {tokenize} from " + json.dumps((KIT_DIR / "engine" / "words.ts").as_uri()) + ";"
+               "let s='';process.stdin.on('data',(d)=>s+=d).on('end',()=>console.log(JSON.stringify(tokenize(s))));")
+    try:
+        done = subprocess.run(["node", "--input-type=module", "-e", program], input=text, capture_output=True,
+                              text=True, encoding="utf-8", timeout=60, check=True)
+        tokens = json.loads(done.stdout)
+        if isinstance(tokens, list) and tokens:
+            return [str(t) for t in tokens]
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    tokens = []
+    for ch in text:
+        if ch.isspace():
+            continue
+        if norm(ch) or not tokens:
+            tokens.append(ch)
+        else:
+            tokens[-1] += ch
+    return tokens
+
+
 def script_tokens(text: str) -> list[str]:
     """The script's words as the captions will show them. A token of punctuation alone
     (a dash, a middle dot) rides with the word before it."""
+    if _UNSPACED.search(text):
+        return _segment(text)
     tokens: list[str] = []
     for raw in text.split():
         if not norm(raw) and tokens:
@@ -85,6 +114,8 @@ def conform(tokens: list[str], heard: list[dict[str, Any]], total: float) -> tup
     """Give every script token a start and an end from what was heard.
 
     Returns the timed tokens and the share of tokens whose timing was heard directly."""
+    if _UNSPACED.search("".join(tokens)):
+        return _conform_characters(tokens, heard, total)
     a = [norm(t) for t in tokens]
     b = [norm(h["word"]) for h in heard]
     times: list[tuple[float, float] | None] = [None] * len(tokens)
@@ -130,6 +161,50 @@ def conform(tokens: list[str], heard: list[dict[str, Any]], total: float) -> tup
         words.append({"text": token, "start": round(start, 3), "end": round(end, 3)})
         previous_end = start
     return words, (direct / len(tokens) if tokens else 1.0)
+
+
+def _conform_characters(tokens: list[str], heard: list[dict[str, Any]], total: float) -> tuple[list[dict[str, Any]], float]:
+    """Scripts without spaces: the transcriber cuts words differently than the script does, so
+    match character by character and let each script word span the characters it owns."""
+    script = [(i, ch) for i, token in enumerate(tokens) for ch in norm(token)]
+    clock: list[tuple[str, float, float]] = []
+    for h in heard:
+        chars = norm(h["word"])
+        for k, ch in enumerate(chars):
+            span = (h["end"] - h["start"]) / len(chars)
+            clock.append((ch, h["start"] + k * span, h["start"] + (k + 1) * span))
+    spans: list[list[float] | None] = [None] * len(tokens)
+    matched = 0
+    for tag, i1, i2, j1, _j2 in difflib.SequenceMatcher(a=[c for _, c in script], b=[c for c, _, _ in clock], autojunk=False).get_opcodes():
+        if tag != "equal":
+            continue
+        for k in range(i2 - i1):
+            index = script[i1 + k][0]
+            _, start, end = clock[j1 + k]
+            spans[index] = [min(spans[index][0], start), max(spans[index][1], end)] if spans[index] else [start, end]  # type: ignore[index]
+            matched += 1
+    # Words nobody heard share the gap between their timed neighbours.
+    i = 0
+    while i < len(tokens):
+        if spans[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < len(tokens) and spans[j] is None:
+            j += 1
+        left = spans[i - 1][1] if i > 0 else 0.0  # type: ignore[index]
+        right = spans[j][0] if j < len(tokens) else total  # type: ignore[index]
+        width = max(0.0, right - left) / (j - i)
+        for n in range(i, j):
+            spans[n] = [left + (n - i) * width, left + (n - i + 1) * width]
+        i = j
+    words = []
+    for i, token in enumerate(tokens):
+        start, end = spans[i]  # type: ignore[misc]
+        previous = words[-1]["start"] if words else 0.0
+        start = max(previous, min(start, total))
+        words.append({"text": token, "start": round(start, 3), "end": round(max(start, min(end, total)), 3)})
+    return words, (matched / len(script) if script else 1.0)
 
 
 def split_points(words: list[dict[str, Any]], total: float, limit: float = TAKE_LIMIT_SECONDS) -> list[float]:
