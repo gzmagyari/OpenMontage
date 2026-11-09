@@ -320,7 +320,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         from claude_agent_sdk import AssistantMessage, UserMessage
         if isinstance(message, AssistantMessage):
             meter.add_usage(getattr(message, "usage", None), getattr(message, "message_id", None))
-            _set_line(ctx, "claude agent", meter.llm_spend(), "anthropic", estimated=True)
+            _set_line(ctx, "claude agent", meter.llm_spend(), llm_provider, estimated=True)
         elif isinstance(message, UserMessage):
             sync_ledger()
 
@@ -364,6 +364,12 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     # network inside; Claude, paid tools and public websites only through the job's sockets.
     boxed = getattr(settings, "agent_sandbox", "off") == "required"
     claude_cap = float(getattr(settings, "agent_max_claude_usd", None) or 3.0)
+    llm_upstream = getattr(settings, "agent_llm_upstream", None)
+    if llm_upstream and not boxed:
+        raise JobFailed("agent_unavailable",
+                        "A custom LLM upstream needs the boxed agent runtime; set "
+                        "OPENMONTAGE_AGENT_SANDBOX=required or unset the upstream.")
+    llm_provider = "llm-gateway" if llm_upstream else "anthropic"
     gateway_spend = 0.0
 
     async def run_session(session_prompt: str, session_resume: str | None, session_fork: bool = False) -> RunOutcome:
@@ -375,11 +381,22 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
                 # The SDK's version probe would start a box of its own; the CLI version is pinned.
                 os.environ.setdefault("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
                 try:
+                    switches = cli_switches()
+                    if llm_upstream:
+                        # The CLI's side calls use a small Claude model; pin the name so the
+                        # upstream gateway can route it explicitly.
+                        switches.setdefault("ANTHROPIC_SMALL_FAST_MODEL", "claude-haiku-5-5")
+                        switches.setdefault("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-5-5")
                     box = await stack.enter_async_context(AgentBox(
                         agent_dir=agent_dir, project_dir=project_dir, model=model,
                         # The SDK caps the CLI's own loop; the gateway backstops anything else.
-                        claude_cap_usd=claude_cap * 1.5, cli_switches=cli_switches(),
-                        api_key=anthropic_api_key(_repo_root()), warn=ctx.warn))
+                        # Behind a custom upstream the CLI cannot price the model, so the
+                        # gateway cap IS the enforcement and gets no slack.
+                        claude_cap_usd=claude_cap * (1.0 if llm_upstream else 1.5),
+                        cli_switches=switches, llm_upstream=llm_upstream,
+                        api_key=(getattr(settings, "agent_llm_upstream_key", None)
+                                 if llm_upstream else anthropic_api_key(_repo_root())),
+                        warn=ctx.warn))
                 except SandboxUnavailable as exc:
                     raise JobFailed("agent_unavailable", f"The agent's box could not start: {exc}")
                 except AgentUnavailable as exc:
@@ -461,13 +478,13 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         # A resumed session reports Claude's cost since the session began, so a revision
         # subtracts what its parent had paid for when it finished.
         meter.llm_exact = max(0.0, float(outcome.total_cost_usd) - claude_cost_baseline)
-        _set_line(ctx, "claude agent", round(meter.llm_exact, 4), "anthropic", estimated=False)
+        _set_line(ctx, "claude agent", round(meter.llm_exact, 4), llm_provider, estimated=False)
     if boxed and gateway_spend > (meter.llm_exact or 0.0) * 1.25 + 0.10:
         # Claude traffic outside the agent loop's own accounting reached the gateway: bill what
         # the gateway metered rather than the loop's lower figure.
         ctx.warn(f"the Claude gateway metered ${gateway_spend:.2f} against the agent loop's "
                  f"${meter.llm_exact or 0.0:.2f}; billing the metered figure")
-        _set_line(ctx, "claude agent", round(gateway_spend, 4), "anthropic", estimated=True)
+        _set_line(ctx, "claude agent", round(gateway_spend, 4), llm_provider, estimated=True)
     # What the tools recorded is the bill. The agent's own cost log is a cross-check, and the
     # fallback if the ledger stayed empty, so a broken ledger can't bill $0. A revision counts
     # only what it added to the shared project log.
@@ -511,7 +528,8 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         "files": files,
         "session_id": outcome.session_id,
         "project_dir": str(project_dir),
-        "agent": {"model": model, "effort": effort, "cost_usd": round(outcome.total_cost_usd, 4),
+        "agent": {"model": model, "effort": effort, "llm_upstream": llm_upstream,
+                  "cost_usd": round(outcome.total_cost_usd, 4),
                   "turns": outcome.num_turns, "duration_ms": outcome.duration_ms},
     }
 

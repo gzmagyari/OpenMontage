@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from engine.sandbox.desk import ToolDesk
-from engine.sandbox.gateway import ClaudeGateway
+from engine.sandbox.gateway import UPSTREAM as ANTHROPIC_UPSTREAM, ClaudeGateway
 from engine.sandbox.webproxy import WebProxy
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -95,7 +95,7 @@ def provider_env(environ: dict[str, str] | os._Environ, shared_tmp: str = "/tmp"
 class AgentBox:
     def __init__(self, *, agent_dir: Path, project_dir: Path, model: str, claude_cap_usd: float,
                  cli_switches: dict[str, str], api_key: str, warn: Callable[[str], None] | None = None,
-                 gateway_transport=None):
+                 gateway_transport=None, llm_upstream: str | None = None):
         self.agent_dir = Path(agent_dir)
         self.project_dir = Path(project_dir)
         self.box_dir = self.agent_dir / "box"
@@ -107,6 +107,7 @@ class AgentBox:
         self.claude_cap_usd = claude_cap_usd
         self.cli_switches = dict(cli_switches)
         self._api_key = api_key
+        self._llm_upstream = llm_upstream
         self._warn = warn or (lambda _message: None)
         self._token = secrets.token_urlsafe(32)
         self._gateway_transport = gateway_transport  # checks only (scripts/agent_box_check.py)
@@ -178,7 +179,7 @@ class AgentBox:
         self.gateway = ClaudeGateway(
             socket_path=self.sockets / "gateway.sock", token=self._token, api_key=self._api_key,
             models={self.model}, model_prefixes=SIDE_MODEL_PREFIXES, cap_usd=self.claude_cap_usd,
-            transport=self._gateway_transport,
+            upstream=self._llm_upstream or ANTHROPIC_UPSTREAM, transport=self._gateway_transport,
             on_refusal=lambda reason: self._warn(f"the Claude gateway refused a request ({reason})"))
         self.web = WebProxy(socket_path=self.sockets / "web.sock", log_path=self.agent_dir / "web.log")
         self.desk = ToolDesk(socket_path=self.sockets / "desk.sock", ledger_dir=self.agent_dir,

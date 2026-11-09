@@ -56,6 +56,17 @@ def _effort(name: str) -> str | None:
     return value
 
 
+def _upstream(name: str) -> str | None:
+    """An http(s) base URL for an Anthropic-format LLM gateway, or None for the Anthropic API."""
+    raw = _env(name)
+    if raw is None:
+        return None
+    value = raw.strip().rstrip("/")
+    if not value.startswith(("http://", "https://")):
+        raise ValueError(f"{name} must be an http(s) base URL, got {raw!r}")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -76,6 +87,8 @@ class Settings:
     agent_concurrency: int
     agent_sandbox: str = "required"
     agent_effort: str | None = None
+    agent_llm_upstream: str | None = None
+    agent_llm_upstream_key: str | None = None
 
     @property
     def jobs_dir(self) -> Path:
@@ -92,6 +105,11 @@ class Settings:
 
 def load_settings() -> Settings:
     cpus = os.cpu_count() or 2
+    llm_upstream = _upstream("OPENMONTAGE_AGENT_LLM_UPSTREAM")
+    llm_upstream_key = _env("OPENMONTAGE_AGENT_LLM_UPSTREAM_KEY")
+    if bool(llm_upstream) != bool(llm_upstream_key):
+        raise ValueError("OPENMONTAGE_AGENT_LLM_UPSTREAM and OPENMONTAGE_AGENT_LLM_UPSTREAM_KEY "
+                         "are set together or not at all")
     return Settings(
         data_dir=Path(_str("OPENMONTAGE_DATA_DIR", str(REPO_ROOT / "data"))),
         projects_dir=PROJECTS_DIR,
@@ -117,6 +135,13 @@ def load_settings() -> Settings:
         agent_sandbox=_str("OPENMONTAGE_AGENT_SANDBOX", "required").strip().lower(),
         # Reasoning effort for the agent model (low|medium|high|xhigh|max); unset = model default.
         agent_effort=_effort("OPENMONTAGE_AGENT_EFFORT"),
+        # An Anthropic-format gateway (e.g. LiteLLM serving /v1/messages) standing in for the
+        # Anthropic API, with the key the job gateway presents to it. Set both or neither.
+        # Boxed runs only: the job gateway is what routes to it, and with a non-Anthropic model
+        # behind it the CLI cannot price its own loop, so the gateway meter is the enforcement
+        # (set BUDGET_LLM_*_PER_MTOK to the model's real rates).
+        agent_llm_upstream=llm_upstream,
+        agent_llm_upstream_key=llm_upstream_key,
     )
 
 
