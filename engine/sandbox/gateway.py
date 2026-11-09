@@ -58,10 +58,22 @@ class UsageReader:
             event = json.loads(data)
         except ValueError:
             return
-        if isinstance(event, dict) and event.get("type") == "message_start":
+        if not isinstance(event, dict):
+            return
+        if event.get("type") == "message_start":
             message = event.get("message") or {}
             self.message_id = message.get("id")
             self.usage = dict(message.get("usage") or {})
+        elif event.get("type") == "message_delta" and isinstance(event.get("usage"), dict):
+            # Anthropic reports a message's output tokens only here, and some Anthropic-format
+            # gateways (LiteLLM) report every count here with zeros in message_start; a meter
+            # reading message_start alone prices such a response at $0. Later positive counts
+            # win; zeros never clobber a known count.
+            merged = dict(self.usage or {})
+            for key, value in event["usage"].items():
+                if isinstance(value, (int, float)) and value > 0:
+                    merged[key] = value
+            self.usage = merged
 
     def close(self) -> None:
         if self.streaming or not self._buffer:
