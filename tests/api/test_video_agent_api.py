@@ -184,7 +184,8 @@ async def test_video_job_end_to_end(agent_client, fake_sdk):
     # One continuous turn: a slow provider call waits in the foreground, nothing moves to the
     # background, and the tools that end a turn with work still running are not offered.
     assert options.tools == agent_session.AGENT_TOOLS
-    assert not {"ScheduleWakeup", "Monitor", "CronCreate", "Task", "Workflow"} & set(options.tools)
+    # Task is offered on purpose since delegation: subagents run in the foreground, inside the turn.
+    assert not {"ScheduleWakeup", "Monitor", "CronCreate", "Workflow"} & set(options.tools)
     assert options.env.get("BASH_DEFAULT_TIMEOUT_MS") == str(20 * 60 * 1000)
     assert options.env.get("BASH_MAX_TIMEOUT_MS") == str(30 * 60 * 1000)
     assert options.env.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS") == "1"
@@ -217,6 +218,31 @@ def test_only_a_real_remotion_run_counts_as_a_direct_render():
     # Reading about it is not rendering (job_ed7f82b42067d137 reached "render" at 66 s this way).
     assert not _DIRECT_RENDER.search('grep -n "npx remotion render" tools/video/video_compose.py')
     assert not _DIRECT_RENDER.search("sed -n 1,200p remotion-composer/SCENE_TYPES.md; ls remotion-composer/src")
+
+
+def test_the_kit_render_counts_as_the_render():
+    from engine.agent.runner import _DIRECT_RENDER
+
+    assert _DIRECT_RENDER.search("cd /data/projects/job_x && kit render --name promo")
+    assert _DIRECT_RENDER.search("kit render")
+    assert _DIRECT_RENDER.search("cd /data/p && env PYTHONPATH=/app python -m lib.videokit render --name x")
+    # Sheets, checks and reading about the command are not the render.
+    assert not _DIRECT_RENDER.search("kit sheet --draft")
+    assert not _DIRECT_RENDER.search("kit check && kit sheet")
+    assert not _DIRECT_RENDER.search('grep -n "kit render" AGENT_GUIDE.md')
+
+
+def test_word_timing_before_the_takes_is_not_the_captions_stage():
+    from engine.agent.runner import StageTracker
+
+    tracker = StageTracker()
+    assert tracker.update("fal_elevenlabs_tts") == ("voiceover", 20)
+    # `kit voice` times the words right after the lines are spoken; the takes are still to come,
+    # and a client must not be shown them as done.
+    assert tracker.update("transcriber") is None
+    assert tracker.update("fal_avatar") == ("talking shots", 40)
+    assert tracker.update("audio_mixer") == ("audio mix", 65)
+    assert tracker.update("video_compose") == ("render", 80)
 
 
 async def test_reading_about_a_tool_does_not_move_the_stage(settings, monkeypatch):

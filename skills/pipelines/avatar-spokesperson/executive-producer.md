@@ -167,11 +167,17 @@ CHECK: Output validation
 
 In a boxed/headless run the EP enforces the parallel shape end to end:
 
-- The script checkpoint carries `metadata.shopping_list`; the compose checkpoint
-  carries `metadata.delegation` (checkpoint-protocol -> Boxed-Job Efficiency).
-- The one-message spawn at script lock happened (burst + composer + mechanic,
-  AGENT_GUIDE -> "Delegation (Binding)"); the burst was collected once, not polled.
-- RUN_REPORT.md includes the delegation record (who produced what) and reconciles
+- The script checkpoint carries `metadata.shopping_list` and the edit passed
+  `kit check --draft` before the lock; the compose checkpoint carries `metadata.kit`,
+  plus `metadata.delegation` when a subagent was used (checkpoint-protocol -> Boxed-Job
+  Efficiency).
+- The one-message spawn at script lock happened (the burst, and the composer only for
+  custom scenes, AGENT_GUIDE -> "Delegation (Binding)"); the burst was collected once,
+  not polled.
+- No sequencing, caption or transition code was written by hand, and the video came
+  from `kit render`.
+- RUN_REPORT.md includes the kit record (the look and how it was restyled, custom
+  scenes, sheets and renders), the delegation record when there was one, and reconciles
   the cost log against the shopping list before settlement.
 
 ## Common Pitfalls

@@ -39,8 +39,9 @@ If the avatar path has limitations such as visible lip-sync risk, retain that no
 
 ## Headless Jobs: Report Requirements (Binding)
 
-RUN_REPORT.md is not complete without the delegation record - which subagent
-(composer, mechanic) produced which artifacts - and the shopping-list reconciliation
+RUN_REPORT.md is not complete without the kit record (the look's starter and how it was
+restyled, custom scenes, sheets and renders), the delegation record when a subagent was
+used - which subagent produced which artifacts - and the shopping-list reconciliation
 (every paid item on the list bought or accounted for; every bought item on the list
 or justified in the plan file). Internal cost figures stay internal: customer-facing
 notes never show cost, margin or multipliers.

@@ -76,16 +76,17 @@ def build_brief(
     project = str(project_dir)
     card = presenter_card(project_dir.name or project)
     caption_rule = (
-        "8. Word-level captions, burned in; they must match the spoken words exactly and never "
-        "collide with other on-screen text."
+        "8. Word-level captions, burned in: the kit makes them from the script's exact words (rule "
+        "10); they must never collide with other on-screen text."
         if captions else
-        "8. No captions (the client disabled them)."
+        '8. No captions (the client disabled them): set `"captions": {"enabled": false}` in the edit.'
     )
     music_rule = (
-        "9. Background music is wanted: generate or reuse a bed, mix with `audio_mixer` full_mix, "
-        "voice ducking on, -14 LUFS integrated."
+        "9. Background music is wanted: generate or reuse a bed, name it in the edit (`music.file`) "
+        "and build the soundtrack with `kit mix` (voice ducking and -14 LUFS are built in)."
         if music else
-        "9. No background music (the client disabled it); still deliver -14 LUFS integrated."
+        "9. No background music (the client disabled it): name none in the edit; `kit mix` still "
+        "builds the voice track at -14 LUFS."
     )
     return f"""# Unattended production run
 
@@ -115,19 +116,22 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
    needs someone else: {card}. Keep that exact person consistent in every shot, and never fall
    back to the stock look-alike presenter (young woman, shoulder-length brown hair, hoop
    earrings, window light) that unguided runs default to.
-4. If the video has a speaking presenter: audio first, ONE voice for the whole video. Generate all
-   spoken lines with `fal_elevenlabs_tts` (model_id eleven-v3; pick one fitting voice and keep it
-   for every line). Pass raw TTS through silence trimming (`trim_silence: true` where the tool
-   supports it); never hand-roll audio filters.
+4. If the video has a voice: audio first, ONE voice for the whole video. Generate all spoken
+   lines with `fal_elevenlabs_tts` (model_id eleven-v3; pick one fitting voice and keep it for
+   every line) and save each as `{project}/assets/audio/<line id>.mp3`, the line ids being the
+   ones in the edit (rule 10). Then run `kit voice`: it tightens the pauses, times every word of
+   the script and lays the lines end to end. Never hand-roll audio filters and never trim or
+   split a line yourself.
 5. Every on-camera talking shot comes from tool `fal_avatar` - read its skill in
    `.agents/skills/fal-avatar/` before the first call and follow its audio contract and prompt
    rules. The default take model is `"h3max"` (one audio-conditioned acting generation with
    native lips, $0.056/s at 768P). Reserve `"h3max-acting"` (adds a frame-accurate lip-sync
    pass, ~$0.26/s) for tight close-ups and lip-critical shots - and when QC finds a delivered
    take's lips wanting, prefer the lip-fix mode on THAT take (pass the take as `video_path`
-   with its line's audio, +$0.20/s, no new plate) over regenerating. Never use a video model's
-   own generated speech; never add a second voice. The delivered take's audio is used verbatim
-   in the mix.
+   with its line's audio, +$0.20/s, no new plate) over regenerating. Generate each take from the
+   PREPARED audio `kit voice` lists for it (`assets/audio/voice_<part>.wav`) with `trim_silence`
+   off, and save it at the path listed beside it: the word timings belong to that exact file.
+   Never use a video model's own generated speech; never add a second voice.
 6. Every scene moves - this is a video, not a slideshow. A scene not covered by an avatar take is
    animated from its still with tool `h3_max_video` (model `h3-max`, operation image_to_video,
    about $0.056 per output second at 768P; skill in `.agents/skills/minimax-h3/`): generate the still,
@@ -137,7 +141,17 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
 7. The hook matters: the first frame must work muted (a scroller decides in about one second).
 {caption_rule}
 {music_rule}
-10. Render with Remotion and deliver BT.709 limited range, H.264, 1080x1920.
+10. Compose with the video kit (its reference is preloaded at the end of AGENT_GUIDE.md; run
+    every `kit` command from the project directory).
+    The numbered shot list of your plan IS `{project}/composition/edit.json`: the voice lines
+    with the exact script, what is on screen in order, every cut pinned to a spoken word, a line
+    or a second, and every overlay. Restyle the look that was copied into the job
+    (`composition/src/look/tokens.ts` first: colours and type from the brand, then any
+    component) so this video does not look like the starter. Never write sequencing, caption,
+    transition or clip-playback code and never run Remotion by hand: `kit check`, `kit sheet`
+    and `kit render` do that. Write code only for the look and for a scene the kit truly lacks
+    (`composition/src/scenes/`). The final video comes from `kit render` (BT.709 limited range,
+    H.264, 1080x1920, verified).
 11. Every generated image (presenter portraits, product shots, scenes, cards) comes from tool
     `openai_image` with `model: "{IMAGE_MODEL}"` and `quality: "{IMAGE_QUALITY}"`, size `1024x1536`
     for vertical frames. Never another image tool or model, FLUX included. Describe a real phone
@@ -155,10 +169,14 @@ assets, the reference files) - then write the complete video plan to
 angle and the muted-viewable hook (what the first frame shows and why it stops a scroller); the
 exact script with second marks; a numbered shot list in which every shot names what is on screen,
 where its visual comes from (avatar take, animated still, real site screenshot) and how it moves;
-the presenter and the voice; the music direction; every piece of on-screen text; and the expected
-paid calls. Post one progress note giving the plan in a sentence or two, then start producing it
-immediately - the plan needs no approval, and production follows it shot by shot. If production
-forces a change, update the plan file and record the reason in the decision log and RUN_REPORT.md.
+the presenter and the voice; the music direction; the look (which starter, and how you restyle it
+for this brand); every piece of on-screen text; and the expected paid calls. Write the shot list
+itself as `{project}/composition/edit.json` (rule 10) - the plan file keeps the reasoning and
+points to it - and run `kit check --draft` on it BEFORE the first paid generation call: it catches a
+line too long for one take and a cut pinned to a word the script does not contain. Post one
+progress note giving the plan in a sentence or two, then start producing it immediately - the plan
+needs no approval, and production follows it shot by shot. If production forces a change, update
+the edit and the plan file and record the reason in the decision log and RUN_REPORT.md.
 
 ## Quality bar
 
@@ -167,6 +185,9 @@ forces a change, update the plan file and record the reason in the decision log 
   whose audio peaks near zero is broken. Reshoot a bad take at most once; prefer a reshoot over
   keeping a bad take.
 - No overlapping or duplicated on-screen text; music must never drown the voice.
+- Before the final render, make a sheet of the telling frames with `kit sheet`, LOOK at it, and
+  fix what it shows in the edit or the look. `kit check` must pass with no errors; a warning is
+  either fixed or answered in RUN_REPORT.md.
 
 ## Progress notes
 
@@ -206,9 +227,13 @@ running unattended: never pause for approval, decide and record. Their feedback:
 Read {project}/artifacts/video_plan.md first to see what the video was built to be, then apply the
 feedback with the smallest change that honors it: reuse every asset that is still right, regenerate
 only what the feedback touches, and keep every locked production decision from the original brief
-(one voice, fal_avatar h3max-acting for on-camera speech, h3_max_video motion on scenes without a
-take, {IMAGE_MODEL} at {IMAGE_QUALITY} quality for any new image, review gates). Update the plan
-file where the revision changes it.
+(one voice, fal_avatar takes for on-camera speech - model h3max, and a delivered take's lips are
+fixed in place before the take is regenerated - h3_max_video motion on scenes without a take,
+{IMAGE_MODEL} at {IMAGE_QUALITY} quality for any new image, review gates). When
+{project}/composition/edit.json exists the video was made with the video kit: change the edit, the
+look or a scene, run `kit voice` again only if a spoken line changed, then `kit check`, `kit sheet`
+and `kit render --name <a new name>`. Otherwise edit the existing composition code as it is.
+Update the plan file where the revision changes it.
 Additional paid-generation budget for this revision: ${budget_usd:.2f}; keep logging costs to
 {project}/artifacts/cost_log.json.
 

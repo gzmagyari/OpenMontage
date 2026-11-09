@@ -34,6 +34,11 @@ close-ups and lip-critical shots only. When QC rejects a take's LIPS specificall
 that take in place: call `fal_avatar` with the take as `video_path` plus its line's audio
 (the lip-fix mode, +$0.20/s) instead of regenerating the whole take.
 
+Every take is generated from its PREPARED audio: the file `kit voice` lists for that part
+(`assets/audio/voice_<part>.wav`), with `trim_silence` off, saved at the take path listed
+beside it. The word timings every cut and caption hangs on belong to that exact file; a take
+made from the raw line, or trimmed again, drifts out of sync.
+
 ### 1b. Sample Preview (Prevents Wasted Spend)
 
 Before batch-generating assets, produce one sample of each expensive type and show the user:
@@ -138,9 +143,10 @@ Rules:
 
 At script lock, launch the batch above with `run_in_background` instead of waiting on
 it: one background Bash call for the whole burst, chained inside - TTS first
-(concurrent), then takes / b-roll / music / image concurrently as their inputs land,
-each writing its result JSON and cost-log entries exactly as above. Do the LLM-side
-prep (captions structure, edit plan, composition work) while it cooks and collect the
+(concurrent, each line saved at `assets/audio/<line id>.mp3`), then `kit voice`, then
+takes / b-roll / music / image concurrently as their inputs land, each writing its
+result JSON and cost-log entries exactly as above. While it cooks, restyle the look
+and settle the layout against placeholders with `kit sheet --draft`; collect the
 results at edit time. Before RUN_REPORT.md: every background task completed, every
 expected output file exists; resubmit only the failed items. Never end the session
 with a background job still running. Never poll it either: launch, work, collect ONCE
@@ -149,8 +155,9 @@ at the stage boundary - repeated status-check calls are wasted turns.
 ### Shopping list (Binding)
 
 The burst buys exactly what the locked plan's shopping list names (script-director ->
-"Script Lock in Headless Jobs"), writing each item to its listed artifact path - that
-is what lets the composer wire asset paths before the files exist. Failed items are
+"Script Lock in Headless Jobs"), writing each item to its listed artifact path - the
+edit names the same paths, so `kit sheet --draft` shows a placeholder until each file
+lands. Failed items are
 resubmitted idempotently (same per-item files). A paid item NOT on the list may be
 bought mid-run only after appending a one-line justification to the plan file
 (`artifacts/video_plan.md`) in the same call that buys it - QC-driven re-takes are the

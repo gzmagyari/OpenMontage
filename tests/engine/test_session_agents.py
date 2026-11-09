@@ -22,17 +22,25 @@ def test_the_mechanic_is_a_foreground_haiku_worker():
     assert "Never call paid" in MECHANIC_AGENT.prompt or "never call paid" in MECHANIC_AGENT.prompt.lower()
 
 
-def test_the_composer_is_a_creative_coauthor_on_its_own_model():
+def test_the_composer_writes_custom_scenes_only_on_its_own_model():
     agent = composer_agent()
     assert agent.model == "claude-sonnet-5-5"          # the deployment default
     assert composer_agent("claude-opus-5-5").model == "claude-opus-5-5"  # the env knob
     assert set(agent.tools) == {"Bash", "Read", "Write", "Edit"}
     assert not getattr(agent, "background", None)
-    low = agent.prompt.lower()
+    low = " ".join(agent.prompt.lower().split())
     assert "never call paid" in low
     assert "never a generic template" in low            # creative code, not a pipeline
-    assert "composition/src" in agent.prompt
+    assert "composition/src/scenes/" in low             # scenes only: the kit assembles the video
+    assert "do not touch composition/edit.json" in low  # the edit is the director's
     assert "absolute project path" in low               # probe finding: /app cwd is read-only
+    assert "only when the plan lists custom scenes" in " ".join(agent.description.lower().split())
+
+
+def test_the_mechanic_no_longer_does_composition_chores():
+    # Staging, word timing and the mix are kit commands now.
+    assert "composition chores" not in MECHANIC_AGENT.prompt.lower()
+    assert "composition chores" not in MECHANIC_AGENT.description.lower()
 
 
 def test_the_session_takes_the_composer_model_knob():

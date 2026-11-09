@@ -130,7 +130,11 @@ function customScenes() {
 async function prepare() {
   const editFile = path.join(comp, 'edit.json');
   const edit = readJson(editFile, 'The edit');
-  if (edit === null) fail(`no edit found at ${path.relative(process.cwd(), editFile) || editFile}. Write composition/edit.json first.`);
+  if (edit === null) {
+    fail(fs.existsSync(comp)
+      ? 'composition/edit.json is missing. Write the edit first (or `kit init` to get a skeleton).'
+      : `${project} is not a job's project directory (it has no composition/). Run kit there, or pass --project DIR.`);
+  }
   const diags = validateEdit(edit);
   if (diags.some((d) => d.level === 'error')) return {edit, diags, resolved: null, meta: {}};
 

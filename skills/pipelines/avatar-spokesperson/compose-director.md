@@ -12,6 +12,9 @@ Phase 1 deferred from HyperFrames. `edit_decisions.render_runtime` must be `"rem
 - Per AGENT_GUIDE.md → "Present Both Composition Runtimes (HARD RULE)": the lock to remotion is NOT an excuse to skip the conversation. The user deserves to know that HyperFrames exists as a runtime and why it isn't viable for avatar-spokesperson. Log a `render_runtime_selection` decision with hyperframes `rejected_because: "TalkingHead + caption parity deferred on avatar-spokesperson"`.
 - Pass `proposal_packet`/`brief` to `video_compose.execute()` for in-tool runtime-swap detection.
 
+In a headless job the video kit drives Remotion (`kit sheet`, `kit render`): `TalkingHead`,
+`remotion_caption_burn` and `video_compose` belong to the interactive path and are not used.
+
 ## Prerequisites
 
 | Layer | Resource | Purpose |
@@ -61,17 +64,20 @@ Record important findings in:
 - subtitles stay readable,
 - the presenter remains visually stable.
 
-## Headless Jobs: Composer Draft and Background Renders (Binding)
+## Headless Jobs: Check, Sheet, Render (Binding)
 
-- The composition you render here started as the `composer` subagent's draft, reviewed
-  and edited by you. The compose checkpoint must carry the delegation record
-  (checkpoint-protocol -> Boxed-Job Efficiency): which subagent produced which
-  artifacts. A compose checkpoint without the composer's draft in that record is
-  INVALID - if you somehow got here without it, stop and spawn the composer for the
-  rework instead of pressing on solo.
-- Preview and final renders run as background Bash while you do LLM-side work (QC
-  notes, RUN_REPORT drafting); collect ONCE when the render finishes - no polling.
-  The final export, its verification and settlement stay yours, never a subagent's.
+- The video is rendered by the kit from `composition/edit.json`, the job's restyled look
+  and any custom scenes. The order: `kit mix` (the soundtrack), `kit check` (no errors,
+  nothing missing), `kit sheet` - LOOK at the sheet and fix what it shows in the edit or
+  the look - then `kit render --name <name>`. One render: a second one needs a defect QC
+  can name. Never run Remotion by hand.
+- The compose checkpoint carries `metadata.kit` (checkpoint-protocol -> Boxed-Job
+  Efficiency): the look's starter and what was restyled, the custom scenes, how many
+  sheets and renders it took. A compose checkpoint without a passing `kit check` is
+  INVALID; when a subagent was used it also carries the delegation record.
+- The final render runs as background Bash while you do LLM-side work (QC notes,
+  RUN_REPORT drafting); collect ONCE when it finishes - no polling. The final export,
+  its verification and settlement stay yours, never a subagent's.
 
 ## Common Pitfalls
 

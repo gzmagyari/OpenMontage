@@ -46,13 +46,13 @@ AGENT_TOOLS = ["Bash", "Read", "Write", "Edit", "Skill", "Task", "WebFetch", "We
 # rates (the gateway prices claude-haiku-* traffic separately). Creative decisions, QC
 # verdicts and paid provider calls stay with the director.
 MECHANIC_AGENT = AgentDefinition(
-    description="Fast mechanical worker for file wrangling, ffmpeg probes and frame "
-                "extraction, caption/subtitle conforming and composition chores. Give it a "
-                "self-contained brief with exact input and output paths.",
+    description="Fast mechanical worker for file wrangling, ffmpeg probes, frame "
+                "extraction and mechanical checks. Give it a self-contained brief with exact "
+                "input and output paths.",
     prompt=(
         "You are a production mechanic inside a video job's sandbox. Do exactly the mechanical "
-        "task in your brief - file operations, ffmpeg probes and frame extraction, "
-        "caption/subtitle conforming, Remotion composition chores - then report concisely what "
+        "task in your brief - file operations, ffmpeg probes and frame extraction, durations, "
+        "dimensions and decode checks - then report concisely what "
         "you did and what you verified, naming the files you produced. Never call paid "
         "generation tools, never browse the web, never make creative decisions; if the brief "
         "needs any of that, stop and say so instead of improvising."
@@ -61,34 +61,40 @@ MECHANIC_AGENT = AgentDefinition(
     model="claude-haiku-5-5",
 )
 
-# The composition co-author: an LLM subagent that writes the Remotion composition's first
-# full draft for THIS video from the locked plan (creative code, never a template), in
-# parallel with the provider burst and the mechanic. The director reviews and edits the
-# draft and owns the final cut. Model is a deployment knob (OPENMONTAGE_COMPOSER_MODEL).
+# The custom-scene author: the video kit assembles a video from the director's edit, so there
+# is no composition to draft. This subagent writes only the scenes a video needs that the kit
+# does not have, in parallel with the provider burst, and only when the plan lists any. The
+# director reviews them and owns the final cut. Model is a deployment knob
+# (OPENMONTAGE_COMPOSER_MODEL).
 COMPOSER_MODEL_DEFAULT = "claude-sonnet-5-5"
 
 
 def composer_agent(model: str | None = None) -> AgentDefinition:
     return AgentDefinition(
-        description="Composition co-author: writes the Remotion composition's first full "
-                    "draft from the locked plan, shot list and asset-manifest paths (assets "
-                    "may still be generating - the paths are fixed). Give it the plan, the "
-                    "exact artifact paths, presenter/voice/music direction and caption "
-                    "timing when it exists.",
+        description="Custom-scene author: writes the scenes a video needs that the video kit "
+                    "does not have. Give it the absolute project path and, for each scene, its "
+                    "name, what it shows and when, its props, and the look it has to belong to. "
+                    "Use it only when the plan lists custom scenes.",
         prompt=(
-            "You are the composition co-author inside a video job's sandbox. From the brief "
-            "- the locked plan, numbered shot list, exact asset paths (the files may still "
-            "be generating; wire the paths anyway), on-screen text and timing - author the "
-            "complete Remotion composition for this specific video in the project's "
-            "composition/src/ directory. Your brief names the absolute project path; work "
-            "there (the repo root you start in is read-only), extending the pre-staged "
-            "workspace. Write creative, purpose-built composition "
-            "code that serves this video's plan; never a generic template. Typecheck or "
-            "bundle what you wrote and fix what fails. Then report concisely: the files you "
-            "produced, the composition id and duration, and anything you had to assume. "
-            "Never call paid generation tools, never browse the web, never render the final "
-            "export, never touch cost or billing files, and never override the plan's "
-            "creative decisions; if the brief needs any of that, stop and say so."
+            "You write custom scenes for one video inside its job sandbox. The video kit "
+            "assembles the video from the director's edit; you write only the scenes in your "
+            "brief, the ones the kit does not have. First read /app/remotion-composer/kit/"
+            "README.md (\"Your own scenes\" and \"Ready-made scenes\") and, for Remotion "
+            "itself, /app/.agents/skills/remotion-best-practices/rules/. Your brief names the "
+            "absolute project path; work there (the repo root you start in is read-only). For "
+            "each scene write composition/src/scenes/<Name>.tsx and register it in "
+            "composition/src/scenes.ts. Build on the kit's helpers from '@kit/engine' and "
+            "'@kit/scenes' (useShot, useWordFrame, useDress, surface, Backdrop, PushIn, "
+            "HEAD_START) and on the job's look in composition/src/look, so the scene belongs "
+            "to this video; it must show something on its first frame. Write creative, "
+            "purpose-built code for this video's plan, never a generic template. Typecheck "
+            "with `npx tsc -p tsconfig.json` in the project's composition directory and fix "
+            "what fails. Do not touch composition/edit.json, the look, the kit, or any file "
+            "outside the scenes you were asked for. Then report concisely: the scene names, "
+            "their props, and anything you had to assume. Never call paid generation tools, "
+            "never browse the web, never render the final export, never touch cost or "
+            "billing files, and never override the plan's creative decisions; if the brief "
+            "needs any of that, stop and say so."
         ),
         tools=["Bash", "Read", "Write", "Edit"],
         model=model or COMPOSER_MODEL_DEFAULT,

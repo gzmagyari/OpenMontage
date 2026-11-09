@@ -45,6 +45,11 @@ def main(argv: list[str] | None = None) -> int:
         index = rest.index("--project")
         del rest[index:index + 2]
 
+    known = NODE_COMMANDS | {"init", "look", "voice", "mix"}
+    if command in known and command != "init" and not (project / "composition").is_dir():
+        print(f"kit: {project} is not a job's project directory (it has no composition/). "
+              f"Run kit there, or pass --project DIR.", file=sys.stderr)
+        return 2
     if command in NODE_COMMANDS:
         return _node(project, command, rest)
 

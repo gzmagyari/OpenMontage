@@ -64,7 +64,8 @@ _UNFINISHED_PROMPT = (
 _WRAP_PROMPT = (
     "The model-call budget for this production is used up, so this is a short wrap-up session. "
     "Do not generate any new assets and do not call any paid tool. Assemble the best possible video "
-    "from the assets that already exist in the project, render it with Remotion, export the final MP4 "
+    "from the assets that already exist in the project, render it (`kit render` when "
+    "composition/edit.json exists, else Remotion as the project was built), export the final MP4 "
     "under exports/, and write RUN_REPORT.md noting the early wrap-up. If an export already exists, "
     "verify it and stop."
 )
@@ -88,8 +89,12 @@ _TOOL_STAGES: list[tuple[re.Pattern[str], str, int]] = [
     (re.compile(r"audio_mixer|music|freesound", re.I), "audio mix", 65),
     (re.compile(r"video_compose|remotion|hyperframes", re.I), "render", 80),
 ]
-# The one production step the agent may run outside the tools: Remotion straight from the shell.
-_DIRECT_RENDER = re.compile(r"(?:^|&&|;)\s*(?:timeout\s+\d+\s+)?npx\s+remotion\s+render\b")
+# The one production step the agent runs outside the tools: the final render, through the video
+# kit (`kit render`) or, in projects made before it, Remotion straight from the shell.
+_DIRECT_RENDER = re.compile(
+    r"(?:^|&&|;)\s*(?:timeout\s+\d+\s+)?(?:npx\s+remotion\s+render\b|(?:\S*/)?kit\s+render\b"
+    r"|(?:env\s+\S+\s+)?python3?\s+-m\s+lib\.videokit\s+render\b)")
+_TAKES_INDEX = 1
 
 
 class StageTracker:
@@ -102,6 +107,11 @@ class StageTracker:
     def update(self, tool: str) -> tuple[str, int] | None:
         for index, (pattern, stage, progress) in enumerate(_TOOL_STAGES):
             if index > self._index and pattern.search(tool):
+                # `kit voice` times the words right after the lines are spoken, before any take
+                # exists. That is not the captions stage: skipping ahead would show the takes
+                # as done while they are still being filmed.
+                if stage == "captions" and self._index < _TAKES_INDEX:
+                    return None
                 self._index = index
                 return stage, progress
         return None
@@ -303,27 +313,22 @@ async def _write_provider_menu(project_dir: Path, warn: Any) -> None:
 
 
 def _stage_composition_workspace(project_dir: Path, warn: Any) -> None:
-    """Boilerplate the director otherwise rebuilds by hand every run: the composition dir,
-    the node_modules link and the base configs from remotion-composer/ (AGENT_GUIDE
-    "Latency Rules" sends the agent here instead). Structure only, never content. Skipped
-    when composition/ already exists (resume, revision), and a failure only warns - the
-    agent builds the workspace itself when it is missing."""
+    """The video kit's workspace (lib.videokit.stage): the entry file, an empty scene
+    registry, an edit skeleton and a copy of the default starter look, which the director
+    restyles for the video. Structure and a starting point, never a finished video. Skipped
+    when composition/ already exists (resume, revision, a project made before the kit), and
+    a failure only warns - the agent runs `kit init` itself when the workspace is missing."""
     comp = project_dir / "composition"
     if comp.exists():
         return
     try:
-        source = _repo_root() / "remotion-composer"
-        (comp / "src").mkdir(parents=True, exist_ok=True)
-        (comp / "public").mkdir(parents=True, exist_ok=True)
-        for name in ("package.json", "tsconfig.json"):
-            if (source / name).is_file():
-                shutil.copy2(source / name, comp / name)
-        modules = source / "node_modules"
-        if modules.exists():
-            try:
-                (comp / "node_modules").symlink_to(modules)
-            except OSError as exc:
-                warn(f"composition workspace: node_modules link skipped: {exc}")
+        from lib.videokit import REPO_ROOT
+        from lib.videokit.stage import stage_workspace
+
+        stage_workspace(project_dir)
+        # Only worth a warning when there was something to link (no symlink rights).
+        if (REPO_ROOT / "remotion-composer" / "node_modules").exists() and not (comp / "node_modules").exists():
+            warn("composition workspace: node_modules link skipped")
     except Exception as exc:
         warn(f"composition workspace pre-stage skipped: {exc}")
 

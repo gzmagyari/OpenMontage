@@ -145,6 +145,17 @@ Orthogonal to *runtime* is *authoring mode*: **how** the composition is built. P
 
 **Default to atelier for hero work** — marketing, launches, brand pieces, any single-deliverable explainer that must impress. The deciding rule: *reuse engine knowledge, never creative components.* In atelier mode the stock scene-type catalog, `hyperframes-registry` blocks, fixtures, and finished components are **off-limits** — they are frozen looks that reintroduce sameness. Before building, route through **`skills/meta/taste-direction.md`** to set the design read and taste dials, then **`skills/meta/bespoke-composition.md`**, which sequences: art direction (`visual-style`) → motion principles (Disney 12 via `framer-motion`/`lottie-bodymovin`) → engine mechanics (`remotion-best-practices` + the stock components read *only as a mechanics codex*) → render via the atelier path. Close with a **distinctness review**: *could this be any other product's video? does it reuse a look I've made before?* — the inverse of "does it match the reference." Atelier costs more tokens and iteration than templated; say so at proposal so the user opts in knowingly.
 
+**Headless video jobs use the video kit** - a third authoring mode, and the one a job brief
+means when it says "compose with the video kit". It reuses ENGINE, never a finished look: shot
+sequencing, cuts pinned to spoken words, transitions, clip playback, captions, the soundtrack and
+the export are a tested library (`remotion-composer/kit/`; its reference is preloaded at the end
+of this guide), and the director writes the video as an edit file. What is creative stays
+yours: the look is copied into the job as editable code and MUST be restyled for the video
+(colours, type, the feel of its cards - `kit check` refuses a final render while it is
+untouched), and any shot or overlay may be a scene written for this video. Close with the same
+distinctness review: could this be any other product's video? If yes, restyle further or write
+the scene that makes it this one.
+
 ### Escalate Blockers Explicitly
 
 When a blocker occurs, the agent must surface it immediately using this structure:
@@ -291,20 +302,21 @@ Wall-clock time is a product feature: headless jobs are billed and judged by it.
    partial progress ride in the same Bash call that generated the item
    (checkpoint-protocol -> "Boxed-Job Efficiency"); never spend a turn on them.
 4. **Read preloaded context instead of re-deriving it.** The preflight writes
-   `work/provider_menu.json` (below), and the end of this guide preloads the small
-   always-used skills verbatim - do not spend turns re-reading their source files.
-   The composition workspace is pre-staged at `composition/` (src/, public/, a
-   node_modules link, package.json, tsconfig.json) - extend it, never rebuild it;
-   only if it is missing, build it as before.
+   `work/provider_menu.json` (below), and the end of this guide preloads the checkpoint
+   digest and the video kit's reference - do not spend turns re-reading their source
+   files. The composition workspace is pre-staged at `composition/` (the kit's entry
+   file, an empty scene registry, an edit skeleton, a starter look to restyle and a
+   node_modules link) - extend it, never rebuild it; only if it is missing, run
+   `kit init`.
 5. **Pipeline the stages.** At script lock, fire the whole provider burst as ONE
    `run_in_background` Bash call (the Parallel Generation pattern, chained: TTS
-   first, concurrently; then takes/b-roll/music/image concurrently as their inputs
-   land, each writing its result JSON and cost-log entries). Do the LLM-side prep -
-   captions structure, edit plan, composition work - while it cooks, and collect at
-   edit time. Before writing RUN_REPORT.md, verify every background task has
-   completed and every expected output file exists; resubmit only the failed items
-   (their per-item files are idempotent). Never end the session with a background
-   job still running.
+   first, concurrently; then `kit voice`; then takes/b-roll/music/image concurrently
+   as their inputs land, each writing its result JSON and cost-log entries). While it
+   cooks, restyle the look and settle the layout against placeholders with
+   `kit sheet --draft`; collect at edit time. Before writing RUN_REPORT.md, verify
+   every background task has completed and every expected output file exists;
+   resubmit only the failed items (their per-item files are idempotent). Never end
+   the session with a background job still running.
 6. **Delegate mechanical work.** See "Delegation (Binding)" just below.
 
 ## Delegation (Binding)
@@ -315,34 +327,30 @@ not sum(). Foreground only, and never poll: a background burst or a spawned suba
 launched, other work happens, and results are collected ONCE at the stage boundary.
 Repeated status-check Bash calls are wasted turns and are a protocol violation.
 
-- **`composer`** - the composition co-author (its own LLM). It writes the Remotion
-  composition's FIRST FULL DRAFT for this video in `composition/src/`, extending the
-  pre-staged workspace, and typechecks it. Its brief must be self-contained: the locked
-  plan (angle, scripted seconds, numbered shot list), the shopping list's exact artifact
-  paths (assets may still be generating - the paths are already fixed), presenter/voice/
-  music direction, on-screen text, and caption timing when it exists. The draft is
-  creative code written for this video, never a template - but CREATIVE AUTHORITY stays
-  with you: review the draft, make small fixes yourself, send structural rework back
-  with a fix list, and own the final cut.
-- **`mechanic`** - the cheap mechanical worker: caption/subtitle conforming and
-  alignment chores; QA frame extraction and mechanical checks (durations, dimensions,
-  decode checks, file existence); composition assembly chores (copying assets into
-  `public/`, boilerplate scene wiring); file wrangling and probes.
+- **`composer`** - the custom-scene author (its own LLM). The video kit assembles the
+  video from your edit, so there is no composition to draft; the composer writes ONLY the
+  scenes the kit does not have, in `composition/src/scenes/`, registers them and
+  typechecks them. Spawn it when - and only when - the plan lists custom scenes. Its brief
+  must be self-contained: the absolute project path, each scene's name, what it shows and
+  when, its props, and the look it has to belong to. CREATIVE AUTHORITY stays with you:
+  review what comes back, make small fixes yourself, and own the final cut.
+- **`mechanic`** - the cheap mechanical worker: QA frame extraction and mechanical checks
+  (durations, dimensions, decode checks, file existence), file wrangling and probes.
+  Staging, word timing and the mix are `kit` commands now - never hand them to a subagent.
 
-**The one-message spawn (MUST, at script lock in headless jobs):** the moment the plan,
-script and shopping list are locked, issue ONE message containing (a) the whole provider
-burst as a single background Bash call (Latency rule 5), (b) `Task composer` with the
-brief above, and (c) `Task mechanic` for conforming/QA prep that needs no asset bytes.
-While you block on the Tasks, the burst cooks underneath; when they return, collect the
-burst once and continue. The compose checkpoint is INVALID without the composer's draft
-recorded in its delegation record (checkpoint-protocol -> Boxed-Job Efficiency); if the
-draft is missing, spawn the composer - authoring the first draft solo is a protocol
-violation, not initiative.
+**The one-message spawn (MUST, at script lock in headless jobs):** the moment the plan, the
+script, the shopping list and `composition/edit.json` are locked (`kit check --draft`
+passes), issue ONE message containing (a) the whole provider burst as a single background
+Bash call (Latency rule 5) and (b) `Task composer` when the plan lists custom scenes. While
+the burst cooks, restyle the look and run `kit sheet --draft`; when it is back, collect it
+once and continue. Writing sequencing, caption, transition or clip-playback code yourself -
+or having a subagent write it - is a protocol violation, not initiative: that code is the
+kit's.
 
-**Never delegate:** creative decisions (script, casting, shot choices, titles, music
-direction); QC verdicts (reading `skills/meta/reviewer.md` and judging against it
-stays yours); paid generation calls; decision-log judgment entries; the final render
-and settlement; anything whose brief you cannot make fully self-contained.
+**Never delegate:** creative decisions (script, casting, shot choices, the edit, titles,
+music direction); QC verdicts (reading `skills/meta/reviewer.md` and judging against it
+stays yours); paid generation calls; decision-log judgment entries; `kit` commands, the
+final render and settlement; anything whose brief you cannot make fully self-contained.
 
 **Rules:** foreground only - never run a subagent in the background; at most 3 at
 once; every brief names its exact input and output paths ABSOLUTE under the project
@@ -816,10 +824,12 @@ The `.agents/skills/` directory is large. When you're not coming in through a to
 
 ## Preloaded Skill Digests (Read Here, Not Mid-Run)
 
-The three small always-used skills below are preloaded VERBATIM so you never spend a
-turn reading their source files (a test keeps them in sync; the source file remains the
-authority if they ever disagree). `skills/meta/reviewer.md` is deliberately NOT
-preloaded - read it in full at the QC gate, as always.
+The checkpoint digest and the video kit's reference below are preloaded so you never
+spend a turn reading their source files (a test keeps the kit's copy in sync with
+`remotion-composer/kit/README.md`; the source file remains the authority if they ever
+disagree). `skills/meta/reviewer.md` is deliberately NOT preloaded - read it in full at
+the QC gate, as always. Writing a custom scene? The Remotion rules live in
+`.agents/skills/remotion-best-practices/rules/` (videos.md, assets.md).
 
 ### Checkpoint protocol digest (authority: `skills/meta/checkpoint-protocol.md`)
 
@@ -835,428 +845,226 @@ preloaded - read it in full at the QC gate, as always.
   it instead of regenerating (never re-pay for work that exists).
 - Checkpoints live at `projects/<id>/checkpoint_<stage>.json`; superseded ones are
   archived to `history/`, never destroyed.
-- Boxed jobs require two metadata fields: the script checkpoint's
-  `metadata.shopping_list` (every paid item with its exact artifact path) and the
-  compose checkpoint's `metadata.delegation` (subagent -> artifacts; no composer
-  entry = invalid checkpoint - spawn the composer, never author the first draft solo).
+- Boxed jobs require: the script checkpoint's `metadata.shopping_list` (every paid item
+  with its exact artifact path) and a `composition/edit.json` that passes
+  `kit check --draft`; the compose checkpoint's `metadata.kit` (the look's starter, what
+  was restyled, custom scenes, sheets, renders) after a passing `kit check`; and
+  `metadata.delegation` (subagent -> artifacts) whenever a subagent was used.
 
 Read the full protocol file when a gate, resume conflict or schema question goes
 beyond this digest.
 
-### remotion-best-practices/rules/videos.md (verbatim)
+### The video kit (verbatim: `remotion-composer/kit/README.md`)
 
-# Using videos in Remotion
+# The video kit
 
-## Prerequisites
+An edit file in, a rendered video out. The director decides what is on screen and when; the
+kit supplies everything that is the same in every video and was being rewritten each time:
+shot sequencing, cuts pinned to spoken words, transitions, clip playback, captions, safe
+zones, the soundtrack, the export.
 
-First, the @remotion/media package needs to be installed.  
-If it is not, use the following command:
+Three layers and an escape hatch:
 
-```bash
-npx remotion add @remotion/media # If project uses npm
-bunx remotion add @remotion/media # If project uses bun
-yarn remotion add @remotion/media # If project uses yarn
-pnpm exec remotion add @remotion/media # If project uses pnpm
+- **Engine** (`engine/`) - imported, never edited by a job. General building blocks only.
+- **Look** (`looks/<name>/`) - copied into each job as `composition/src/look/`. Yours to
+  restyle and rewrite; `kit check` refuses a final render while it is untouched.
+- **The edit** (`composition/edit.json`) - the shot list as data.
+- **Your own scenes** - any main item or overlay can be a component written for this video.
+
+## A job's files
+
+```
+composition/
+  edit.json          the edit
+  src/index.ts       registerRoot(makeRoot({look, scenes}))   (staged, leave as is)
+  src/look/          tokens.ts (colours, type, shape) and look.tsx (the components)
+  src/scenes.ts      registry of scenes written for this video
+  src/scenes/*.tsx   those scenes
+work/kit/            voice.json, check.json, sheet.jpg, the bundle (all generated)
 ```
 
-Use `<Video>` from `@remotion/media` to embed videos into your composition.
+## Commands (run in the project directory)
+
+| Command | What it does |
+|---|---|
+| `kit init [--look NAME]` | Stage `composition/`. Never overwrites what is there. |
+| `kit look [NAME] [--force]` | List the starter looks, or copy one into the job. |
+| `kit voice` | After the lines are spoken: tighten each recording, time every word of the script, split a line that is too long for one take, lay the lines end to end. |
+| `kit check [--draft]` | Check the edit, the timeline and the look. `--draft` accepts files that are still generating. |
+| `kit sheet [--draft]` | One sheet of the telling frames (about 8 s), plus layout findings measured in the browser. |
+| `kit mix` | The soundtrack: voice on the spine, music under it (or the music alone when there is no voice), cut to the video's length and faded out, -14 LUFS. |
+| `kit render [--name NAME]` | The final video in `exports/`, tagged BT.709, verified. Refuses while anything is missing. |
+
+Recordings are found at `assets/audio/<line id>.mp3` (or `.wav`), or wherever the line's
+`audio` says. `kit voice` writes `assets/audio/voice_<part>.wav`: generate each take from
+that file exactly as it is (no further trimming), so the take carries the audio the timings
+were made from.
+
+## The edit
+
+```json
+{
+  "canvas": {"size": "1080x1920", "fps": 30, "safe": "tiktok"},
+  "voice": {"lines": [{"id": "A", "take": true, "text": "The exact words of the line."}]},
+  "music": {"file": "assets/audio/music.mp3"},
+  "captions": {"zone": "lower"},
+  "main": [
+    {"take": "A", "until": {"word": "words"}},
+    {"video": "assets/video/broll.mp4", "until": {"line": "A", "edge": "end"}, "enter": "punch"},
+    {"freeze": "A", "for": 2}
+  ],
+  "overlays": [
+    {"tag": "up to 4x", "from": {"word": "exact"}, "for": 1.6},
+    {"card": "end", "props": {"title": "example.com"}, "from": {"voice": "end"}}
+  ]
+}
+```
+
+### Moments
+
+Anywhere a time is wanted:
+
+| Form | Means |
+|---|---|
+| `3.5` or `{"t": 3.5}` | seconds from the start |
+| `{"word": "rebuilds"}` | the next time the voice says it (a short phrase works too). In `main`, "next" counts from where the item starts; in overlays, from the start of the video. Add `"line"`, `"nth"` or `"edge": "end"` to pick. |
+| `{"line": "B"}` | the start of line B (`"edge": "end"` for its end) |
+| `{"voice": "end"}` | where the last line ends |
+| `{"item": "m3"}` | the start of a main item (by `id`, or `m<n>` by position) |
+| `{"end": true}` | the end of the video (overlays only) |
+
+Every form takes `"offset"` in seconds. Words match whatever their case, punctuation or
+hyphens. Before `kit voice` has run, timings are estimated from the script so an edit can be
+checked and sheeted straight away.
+
+### main: what fills the frame, in order
+
+Each item starts where the one before it ended and runs `until` a moment or `for` seconds.
+A take with neither runs to the end of its line; the last item runs to the end of the voice.
+
+| Item | Shows |
+|---|---|
+| `{"take": "A"}` | the presenter take of line A, always on the frame that matches the voice, also after a cutaway |
+| `{"video": "..."}` | a clip (`"start"` seconds in, `"speed"`, `"audio"` 0-1 to keep its sound) |
+| `{"image": "..."}` | a still, with a slow push-in |
+| `{"scene": "Name", "props": {...}}` | a ready-made scene or one of your own |
+| `{"freeze": "A"}` | the last frame of line A's take (or of a video path) |
+| `{"color": "#101010"}` | a plain colour |
+| `{"layout": {...}}` | several of the above at once (below) |
+
+Optional on any item: `"enter"` (`cut`, `fade`, `slide-left|right|up|down`, `whip`, `punch`,
+`wipe`, `flash`, or `{"type", "frames"}`), `"motion"` (`push-in`, `pull-out`, `pan-left|right|up|down`,
+`drift`, `hold`, `none`, or `{"from", "to", "origin"}`), `"fit"` (`cover`, `contain`, `blur`), `"id"`.
+The incoming shot enters on top of the outgoing one, so a transition never moves a cut.
+
+Layouts:
+
+```json
+{"layout": {"type": "split", "slots": [{"take": "A"}, {"video": "screen.mp4"}]}}
+{"layout": {"type": "pip", "base": {"video": "screen.mp4"}, "inset": {"take": "A"}, "corner": "bottom-left"}}
+{"layout": {"type": "card", "media": {"image": "wide.jpg"}, "aspect": 1.5}}
+{"layout": {"type": "grid", "columns": 2, "slots": [...]}}
+```
+
+### overlays: what sits on top
+
+`{"tag": "text"}`, `{"card": "name", "props": {...}}`, `{"text": "..."}` or
+`{"scene": "Name", "props": {...}}`, each with `from` and `until` (or `for`) and an optional
+`zone` (`upper`, `center`, `lower`, `full`). A tag sits in the upper zone, a `text` (a large
+statement; "
+" starts a new line) in the centre. Which cards exist and what props they
+take is the look's business: read `src/look/look.tsx`.
+
+### captions
+
+On whenever there is a voice. `{"enabled": false}` turns them off. `maxWords` / `maxChars`
+tune the automatic grouping; `"phrases": ["Your AI images", "look AI", ...]` sets the breaks
+(and the spelling shown) by hand. Scripts without spaces and right-to-left scripts are
+handled.
+
+## Looks
+
+`pop` - chunky creator style: hard offset shadows, one loud accent, heavy type, springy pops.
+Cards: `hook`, `cta`, `end`.
+
+`editorial` - ink, paper chips and one signal colour; calm entrances. Cards: `end`.
+
+A look exports `look` (see `engine/context.tsx` for the shape: `Caption`, `Tag`, `Text`,
+`cards`, optional `Finish`, `Frame`, `parts`, `motion`) and, in `tokens.ts`, `tokens` and
+`meta` (card zones, caption grouping, the colour pairs the legibility check reads).
+`tokens.ts` must not import anything: the kit command reads it without a bundler.
+
+Every look names the same roles, so ready-made scenes dress themselves in any look:
+`color.ink`, `color.paper`, `color.accent` (plus `negative`, `positive`), `font.display`
+(plus `body`, `weight`) and `shape` (`radius`, `border`, `offset`, `shadow: "hard" | "soft"`).
+Keep those names when restyling; add whatever else the look needs.
+
+Fonts on the render box: DejaVu Sans / Serif / Mono, Noto Sans, Noto Sans Display, Noto
+Serif, Noto Serif Display (regular and bold) and the Noto families for scripts beyond Latin,
+all usable by name. Space Grotesk and Playfair Display ship with the kit: call
+`fonts.spaceGrotesk()` / `fonts.playfair()` from `@kit/engine` once in the look.
+
+## Ready-made scenes
+
+Each fills the frame as a main item; `ListReveal`, `QuoteCard` and `StatCount` also work as
+overlays (`{"scene": "...", "zone": "upper"}` over footage). `backdrop` is a colour, the path
+of a picture or clip, or `{"image" | "video" | "color", "blur", "dim"}`.
+
+`BeforeAfter` - two pictures and a divider that wipes from one to the other. Props: `pair`
+("refs/gran" means `refs/gran_before.jpg` and `refs/gran_after.jpg`) or `before` + `after`;
+`labels`; `afterSide`; `wipe` (`start`, `seconds`, `from`, `to`); `zoom`; `frame: "card"` for
+landscape pictures in a tall video. The handle and labels are drawn by the look.
+
+`KineticText` - big words that arrive one after another; a statement that needs no footage.
+Props: `text` ("\n" starts a line) or `lines`; `emphasis` (words in the accent colour);
+`backdrop`; `align`; `size`; `uppercase`.
+
+`ScreenDemo` - a screenshot or screen recording in a browser or phone frame, with a camera, a
+cursor, clicks and outlined areas. Props: `image` or `video`; `frame` (`browser`, `phone`,
+`plain`); `url`; `steps`, each `{"at": seconds, "zoom", "focus": [x, y], "highlight":
+[x, y, w, h], "cursor": [x, y], "click", "label"}` with positions as fractions of the screen
+content.
+
+`ListReveal` - a short list whose points arrive one by one. Props: `items`; `title`; `at`
+(seconds into the shot, or the word the voice says as each point lands); `numbered`.
+
+`QuoteCard` - what a customer said. Props: `quote`, `name`, `role`, `stars`, `avatar`.
+
+`StatCount` - a number that counts up. Props: `value`, `prefix`, `suffix`, `decimals`,
+`label`, `seconds`.
+
+## Your own scenes
 
 ```tsx
-import { Video } from "@remotion/media";
-import { staticFile } from "remotion";
+// composition/src/scenes/Orbit.tsx
+import {useCurrentFrame} from 'remotion';
+import {PushIn, useShot, useWordFrame} from '@kit/engine';
 
-export const MyComposition = () => {
-  return <Video src={staticFile("video.mp4")} />;
+export const Orbit: React.FC<{image: string}> = ({image}) => {
+  const frame = useCurrentFrame();          // 0 at the start of this shot
+  const {frames} = useShot();               // how long the shot is on screen
+  const atWord = useWordFrame('rebuilds');  // the frame the voice says it, or null
+  ...
 };
 ```
 
-Remote URLs are also supported:
-
-```tsx
-<Video src="https://remotion.media/video.mp4" />
-```
-
-## Trimming
-
-Use `trimBefore` and `trimAfter` to remove portions of the video. Values are in seconds.
-
-```tsx
-const { fps } = useVideoConfig();
-
-return (
-  <Video
-    src={staticFile("video.mp4")}
-    trimBefore={2 * fps} // Skip the first 2 seconds
-    trimAfter={10 * fps} // End at the 10 second mark
-  />
-);
-```
-
-## Delaying
-
-Wrap the video in a `<Sequence>` to delay when it appears:
-
-```tsx
-import { Sequence, staticFile } from "remotion";
-import { Video } from "@remotion/media";
-
-const { fps } = useVideoConfig();
-
-return (
-  <Sequence from={1 * fps}>
-    <Video src={staticFile("video.mp4")} />
-  </Sequence>
-);
-```
-
-The video will appear after 1 second.
-
-## Sizing and Position
-
-Use the `style` prop to control size and position:
-
-```tsx
-<Video
-  src={staticFile("video.mp4")}
-  style={{
-    width: 500,
-    height: 300,
-    position: "absolute",
-    top: 100,
-    left: 50,
-    objectFit: "cover",
-  }}
-/>
-```
-
-## Volume
-
-Set a static volume (0 to 1):
-
-```tsx
-<Video src={staticFile("video.mp4")} volume={0.5} />
-```
-
-Or use a callback for dynamic volume based on the current frame:
-
-```tsx
-import { interpolate } from "remotion";
-
-const { fps } = useVideoConfig();
-
-return (
-  <Video
-    src={staticFile("video.mp4")}
-    volume={(f) =>
-      interpolate(f, [0, 1 * fps], [0, 1], { extrapolateRight: "clamp" })
-    }
-  />
-);
-```
-
-Use `muted` to silence the video entirely:
-
-```tsx
-<Video src={staticFile("video.mp4")} muted />
-```
-
-## Speed
-
-Use `playbackRate` to change the playback speed:
-
-```tsx
-<Video src={staticFile("video.mp4")} playbackRate={2} /> {/* 2x speed */}
-<Video src={staticFile("video.mp4")} playbackRate={0.5} /> {/* Half speed */}
-```
-
-Reverse playback is not supported.
-
-## Looping
-
-Use `loop` to loop the video indefinitely:
-
-```tsx
-<Video src={staticFile("video.mp4")} loop />
-```
-
-Use `loopVolumeCurveBehavior` to control how the frame count behaves when looping:
-
-- `"repeat"`: Frame count resets to 0 each loop (for `volume` callback)
-- `"extend"`: Frame count continues incrementing
-
-```tsx
-<Video
-  src={staticFile("video.mp4")}
-  loop
-  loopVolumeCurveBehavior="extend"
-  volume={(f) => interpolate(f, [0, 300], [1, 0])} // Fade out over multiple loops
-/>
-```
-
-## Pitch
-
-Use `toneFrequency` to adjust the pitch without affecting speed. Values range from 0.01 to 2:
-
-```tsx
-<Video
-  src={staticFile("video.mp4")}
-  toneFrequency={1.5} // Higher pitch
-/>
-<Video
-  src={staticFile("video.mp4")}
-  toneFrequency={0.8} // Lower pitch
-/>
-```
-
-Pitch shifting only works during server-side rendering, not in the Remotion Studio preview or in the `<Player />`.
-
-### remotion-best-practices/rules/assets.md (verbatim)
-
-# Importing assets in Remotion
-
-## The public folder
-
-Place assets in the `public/` folder at your project root.
-
-## Using staticFile()
-
-You MUST use `staticFile()` to reference files from the `public/` folder:
-
-```tsx
-import { Img, staticFile } from "remotion";
-
-export const MyComposition = () => {
-  return <Img src={staticFile("logo.png")} />;
-};
-```
-
-The function returns an encoded URL that works correctly when deploying to subdirectories.
-
-## Using with components
-
-**Images:**
-
-```tsx
-import { Img, staticFile } from "remotion";
-
-<Img src={staticFile("photo.png")} />;
-```
-
-**Videos:**
-
-```tsx
-import { Video } from "@remotion/media";
-import { staticFile } from "remotion";
-
-<Video src={staticFile("clip.mp4")} />;
-```
-
-**Audio:**
-
-```tsx
-import { Audio } from "@remotion/media";
-import { staticFile } from "remotion";
-
-<Audio src={staticFile("music.mp3")} />;
-```
-
-**Fonts:**
-
-```tsx
-import { staticFile } from "remotion";
-
-const fontFamily = new FontFace("MyFont", `url(${staticFile("font.woff2")})`);
-await fontFamily.load();
-document.fonts.add(fontFamily);
-```
-
-## Remote URLs
-
-Remote URLs can be used directly without `staticFile()`:
-
-```tsx
-<Img src="https://example.com/image.png" />
-<Video src="https://remotion.media/video.mp4" />
-```
-
-## Important notes
-
-- Remotion components (`<Img>`, `<Video>`, `<Audio>`) ensure assets are fully loaded before rendering
-- Special characters in filenames (`#`, `?`, `&`) are automatically encoded
-
-### framer-motion/SKILL.md (verbatim)
-
-# Framer Motion Animation Principles
-
-Implement all 12 Disney animation principles using Framer Motion's declarative React API.
-
-## 1. Squash and Stretch
-
-```jsx
-<motion.div
-  animate={{ scaleX: [1, 1.2, 1], scaleY: [1, 0.8, 1] }}
-  transition={{ duration: 0.3, times: [0, 0.5, 1] }}
-/>
-```
-
-## 2. Anticipation
-
-```jsx
-<motion.div
-  variants={{
-    idle: { y: 0, scaleY: 1 },
-    anticipate: { y: 10, scaleY: 0.9 },
-    jump: { y: -200 }
-  }}
-  initial="idle"
-  animate={["anticipate", "jump"]}
-  transition={{ duration: 0.5, times: [0, 0.2, 1] }}
-/>
-```
-
-## 3. Staging
-
-```jsx
-<motion.div animate={{ filter: "blur(3px)", opacity: 0.6 }} /> {/* bg */}
-<motion.div animate={{ scale: 1.1, zIndex: 10 }} /> {/* hero */}
-```
-
-## 4. Straight Ahead / Pose to Pose
-
-```jsx
-<motion.div
-  animate={{
-    x: [0, 100, 200, 300],
-    y: [0, -50, 0, -30]
-  }}
-  transition={{ duration: 1, ease: "easeInOut" }}
-/>
-```
-
-## 5. Follow Through and Overlapping Action
-
-```jsx
-<motion.div animate={{ x: 200 }} transition={{ duration: 0.5 }}>
-  <motion.span
-    animate={{ x: 200 }}
-    transition={{ duration: 0.5, delay: 0.05 }} // hair
-  />
-  <motion.span
-    animate={{ x: 200 }}
-    transition={{ duration: 0.6, delay: 0.1 }} // cape
-  />
-</motion.div>
-```
-
-## 6. Slow In and Slow Out
-
-```jsx
-<motion.div
-  animate={{ x: 300 }}
-  transition={{
-    duration: 0.6,
-    ease: [0.42, 0, 0.58, 1] // easeInOut cubic-bezier
-  }}
-/>
-// Or use: "easeIn", "easeOut", "easeInOut"
-```
-
-## 7. Arc
-
-```jsx
-<motion.div
-  animate={{
-    x: [0, 100, 200],
-    y: [0, -100, 0]
-  }}
-  transition={{ duration: 1, ease: "easeInOut" }}
-/>
-```
-
-## 8. Secondary Action
-
-```jsx
-<motion.button
-  whileHover={{ scale: 1.05 }}
-  whileTap={{ scale: 0.95 }}
->
-  <motion.span
-    animate={{ rotate: [0, 10, -10, 0] }}
-    transition={{ duration: 0.3 }}
-  >
-    Icon
-  </motion.span>
-</motion.button>
-```
-
-## 9. Timing
-
-```jsx
-const timings = {
-  fast: { duration: 0.15 },
-  normal: { duration: 0.3 },
-  slow: { duration: 0.6 },
-  spring: { type: "spring", stiffness: 300, damping: 20 }
-};
-```
-
-## 10. Exaggeration
-
-```jsx
-<motion.div
-  animate={{ scale: 1.5, rotate: 720 }}
-  transition={{
-    type: "spring",
-    stiffness: 200,
-    damping: 10 // low damping = overshoot
-  }}
-/>
-```
-
-## 11. Solid Drawing
-
-```jsx
-<motion.div
-  style={{ perspective: 1000 }}
-  animate={{ rotateX: 45, rotateY: 30 }}
-  transition={{ duration: 0.5 }}
-/>
-```
-
-## 12. Appeal
-
-```jsx
-<motion.div
-  whileHover={{
-    scale: 1.02,
-    boxShadow: "0 20px 40px rgba(0,0,0,0.2)"
-  }}
-  transition={{ duration: 0.3 }}
-/>
-```
-
-## Stagger Children
-
-```jsx
-const container = {
-  hidden: { opacity: 0 },
-  show: {
-    opacity: 1,
-    transition: { staggerChildren: 0.1 }
-  }
-};
-
-<motion.ul variants={container} initial="hidden" animate="show">
-  {items.map(item => <motion.li variants={itemVariant} />)}
-</motion.ul>
-```
-
-## Key Framer Motion Features
-
-- `animate` - Target state
-- `variants` - Named animation states
-- `whileHover` / `whileTap` - Gesture animations
-- `transition` - Timing and easing
-- `AnimatePresence` - Exit animations
-- `useAnimation` - Programmatic control
-- `layout` - Auto-animate layout changes
+Register it in `src/scenes.ts` (`export const scenes = {Orbit};`) and name it in the edit.
+Media paths in props are project-relative and are staged and checked like any other file.
+`useDress()` gives the look's colours, type and surface style, `surface(d)` a card in the
+look's manner, `Backdrop` what sits behind. A scene must never be empty on its first frame
+(a video's first frame has to work on its own): start its entrance `HEAD_START` frames in,
+as the ready-made scenes do.
+
+## What `check` and `sheet` look for
+
+Shape of the edit; words that are not in the script (with close matches); moments that fall
+before the item starts; lines too long for one take (estimated before any voice is bought);
+missing files; frames with nothing on screen; shots under 12 frames; text on screen too
+briefly to read; overlays sharing a zone or sitting in the caption zone; colour pairs that
+are hard to read; a look that was never restyled; and, measured on the sheet's frames,
+overlays that reach into what the app covers or over the captions.
+
+## Tests
+
+`node --test remotion-composer/kit/test/engine.test.ts` (the engine's logic) and
+`pytest tests/kit` (voice, staging, the engine's tests, and a small video built end to end).

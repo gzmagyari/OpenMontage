@@ -100,8 +100,11 @@ def stage_workspace(project_dir: Path, *, look: str = DEFAULT_LOOK) -> list[str]
     modules = comp / "node_modules"
     source_modules = REPO_ROOT / "remotion-composer" / "node_modules"
     if not modules.exists() and not modules.is_symlink() and source_modules.exists():
-        modules.symlink_to(source_modules)
-        note(modules)
+        try:
+            modules.symlink_to(source_modules)
+            note(modules)
+        except OSError:
+            pass  # no symlink rights (plain Windows): everything else still stages
     for path, text in (
         # "type": "module" lets the kit command read the look's tokens.ts directly.
         (comp / "package.json", json.dumps({"name": "kit-job", "private": True, "type": "module"}, indent=1) + "\n"),
