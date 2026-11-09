@@ -293,6 +293,40 @@ Wall-clock time is a product feature: headless jobs are billed and judged by it.
 4. **Read preloaded context instead of re-deriving it.** The preflight writes
    `work/provider_menu.json` (below), and the end of this guide preloads the small
    always-used skills verbatim - do not spend turns re-reading their source files.
+   The composition workspace is pre-staged at `composition/` (src/, public/, a
+   node_modules link, package.json, tsconfig.json) - extend it, never rebuild it;
+   only if it is missing, build it as before.
+5. **Pipeline the stages.** At script lock, fire the whole provider burst as ONE
+   `run_in_background` Bash call (the Parallel Generation pattern, chained: TTS
+   first, concurrently; then takes/b-roll/music/image concurrently as their inputs
+   land, each writing its result JSON and cost-log entries). Do the LLM-side prep -
+   captions structure, edit plan, composition work - while it cooks, and collect at
+   edit time. Before writing RUN_REPORT.md, verify every background task has
+   completed and every expected output file exists; resubmit only the failed items
+   (their per-item files are idempotent). Never end the session with a background
+   job still running.
+6. **Delegate mechanical work.** See "Delegation (Binding)" just below.
+
+## Delegation (Binding)
+
+The box has a `mechanic` subagent (the Task tool): the side model, fast and cheap, for
+work that needs no judgment. Issue several Task calls in ONE message and they run
+concurrently while you wait inside the turn - mechanical phases finish in max() time,
+not sum().
+
+**Delegate:** caption/subtitle conforming and alignment chores; QA frame extraction
+and mechanical checks (durations, dimensions, decode checks, file existence);
+composition assembly chores (copying assets into `public/`, boilerplate scene wiring);
+file wrangling and probes.
+
+**Never delegate:** creative decisions (script, casting, shot choices, titles, music
+direction); QC verdicts (reading `skills/meta/reviewer.md` and judging against it
+stays yours); paid generation calls; decision-log judgment entries; anything whose
+brief you cannot make fully self-contained.
+
+**Rules:** foreground only - never run a subagent in the background; at most 3 at
+once; every brief names its exact input paths, output paths and the check that proves
+completion; verify each subagent's result yourself before building on it.
 
 ## Mandatory Preflight
 
