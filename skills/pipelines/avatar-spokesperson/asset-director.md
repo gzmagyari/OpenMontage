@@ -25,6 +25,15 @@ Use one primary path and record it clearly:
 
 Do not hide a blocked avatar path. Record it.
 
+### 1a. Take Model Economics (Binding)
+
+Standard presenter takes use `fal_avatar` `model: "h3max"` - one audio-conditioned acting
+generation whose native lips ship, trimmed to the line with the verbatim voice ($0.056/s at
+768P). `"h3max-acting"` (adds the frame-accurate lip-sync pass, ~$0.26/s) is for tight
+close-ups and lip-critical shots only. When QC rejects a take's LIPS specifically, upgrade
+that take in place: call `fal_avatar` with the take as `video_path` plus its line's audio
+(the lip-fix mode, +$0.20/s) instead of regenerating the whole take.
+
 ### 1b. Sample Preview (Prevents Wasted Spend)
 
 Before batch-generating assets, produce one sample of each expensive type and show the user:
@@ -92,7 +101,7 @@ registry.discover()
 tool = registry._tools["fal_avatar"]
 BASE = "/data/projects/<project>"
 takes = {
-    "avatar1": {"model": "h3max-acting", "image_path": ..., "audio_path": ..., ...},
+    "avatar1": {"model": "h3max", "image_path": ..., "audio_path": ..., ...},
     "avatar2": {...},
     "avatar3": {...},
 }

@@ -15,14 +15,29 @@ def test_the_avatar_composite_prices_at_the_real_billed_rates():
 
     tool = FalAvatar()
     # 5.1s audio bills as 6 whole seconds: plate $0.056/s + lip-sync $0.20/s at 768P.
-    assert tool.estimate_cost({"audio_duration_seconds": 5.1,
+    assert tool.estimate_cost({"audio_duration_seconds": 5.1, "model": "h3max-acting",
                                "image_url": "http://x/p.png", "audio_url": "http://x/a.mp3"}) == round(6 * 0.256, 4)
     # 480P keeps the pricing API's base plate rate.
-    assert tool.estimate_cost({"audio_duration_seconds": 5.1, "resolution": "480P",
+    assert tool.estimate_cost({"audio_duration_seconds": 5.1, "resolution": "480P", "model": "h3max-acting",
                                "image_url": "http://x/p.png", "audio_url": "http://x/a.mp3"}) == round(6 * 0.235, 4)
     # Lip-sync fix mode is the sync pass alone: $0.20/s.
     assert tool.estimate_cost({"audio_duration_seconds": 9.2,
                                "video_url": "http://x/v.mp4", "audio_url": "http://x/a.mp3"}) == round(10 * 0.20, 4)
+
+
+def test_native_takes_price_at_the_plate_rate_alone():
+    from tools.avatar.fal_avatar import FalAvatar
+
+    tool = FalAvatar()
+    base = {"image_url": "http://x/p.png", "audio_url": "http://x/a.mp3", "audio_duration_seconds": 5.1}
+    # h3max (native) = the plate alone; it is also the DEFAULT when no model is named.
+    assert tool.estimate_cost({**base, "model": "h3max"}) == round(6 * 0.056, 4)
+    assert tool.estimate_cost(base) == round(6 * 0.056, 4)
+    assert tool.estimate_cost({**base, "model": "h3max", "resolution": "480P"}) == round(6 * 0.035, 4)
+    # The composite stays the premium option, 4.6x the native price.
+    assert tool.estimate_cost({**base, "model": "h3max-acting"}) == round(6 * 0.256, 4)
+    enum = tool.input_schema["properties"]["model"]
+    assert enum["default"] == "h3max" and "h3max" in enum["enum"] and "h3max-acting" in enum["enum"]
 
 
 def test_h3_video_applies_the_768p_multiplier_and_rounds_up():

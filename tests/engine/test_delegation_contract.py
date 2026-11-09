@@ -65,3 +65,18 @@ def test_the_reports_reconcile_delegation_and_spend():
     assert "metadata.shopping_list" in ep and "metadata.delegation" in ep
     assert "delegation record" in pub
     assert "never show cost, margin or multipliers" in pub
+
+
+def test_take_economics_default_native_with_the_lip_fix_upgrade():
+    asset = _read(SPOKE / "asset-director.md")
+    assert "### 1a. Take Model Economics (Binding)" in asset
+    assert '`model: "h3max"`' in asset and "lip-fix mode" in asset
+    from pathlib import Path as _P
+
+    from engine.agent.brief import build_brief
+    brief = build_brief(prompt="probe prompt", references=[], project_dir=_P("/tmp/job_test123"),
+                        budget_usd=15.0, duration_seconds=30)
+    flat = " ".join(brief.split())
+    assert 'The default take model is `"h3max"`' in flat
+    assert "lip-fix mode" in flat
+

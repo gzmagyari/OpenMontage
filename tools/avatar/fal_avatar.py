@@ -104,6 +104,11 @@ class FalAvatar(BaseTool):
         "omnihuman-1.5": ("fal-ai/bytedance/omnihuman/v1.5", 0.16),
     }
     COMPOSITE = "h3max-acting"
+    # The plate alone, delivered: audio-conditioned acting with H3's native lips, trimmed to the
+    # line and re-muxed with the verbatim voice. 78% cheaper than the composite; the owner judged
+    # the native lips acceptable for standard takes (2026-11-09). Lip-critical shots upgrade via
+    # the composite or the lip-fix mode on an existing take.
+    NATIVE = "h3max"
     # Real billed rates from fal billing events, 2026-11-09 (the pricing API misleads here:
     # lip-sync lists "$0.05 per unit" where a unit is 0.25s -> $0.20/s, and image-to-video
     # lists the $0.035 480P base while 768P bills 1.6x -> $0.056/s). Fal rounds output
@@ -140,12 +145,16 @@ class FalAvatar(BaseTool):
             "video_path": {"type": "string", "description": "Local video for lip-sync fix mode; uploaded to fal storage"},
             "model": {
                 "type": "string",
-                "default": "h3max-acting",
-                "enum": ["h3max-acting", "kling-v2-standard", "kling-v2-pro", "veed-fabric-1.0", "omnihuman-1.5"],
-                "description": "h3max-acting = prompted acting + accurate lips (H3 Max plate conditioned on the audio, "
-                               "then an H3 Max lip-sync pass; ~$0.26/s at 768P, ~2 min). Single-pass avatars: "
-                               "kling-v2-standard $0.0562/s, veed-fabric-1.0 $0.08/s, kling-v2-pro $0.115/s, "
-                               "omnihuman-1.5 $0.16/s",
+                "default": "h3max",
+                "enum": ["h3max", "h3max-acting", "kling-v2-standard", "kling-v2-pro", "veed-fabric-1.0",
+                         "omnihuman-1.5"],
+                "description": "h3max = THE DEFAULT for standard takes: one audio-conditioned H3 Max acting "
+                               "generation with native lips, trimmed to the line and delivered with the "
+                               "verbatim voice ($0.056/s at 768P). h3max-acting = the same plate plus a "
+                               "frame-accurate lip-sync pass (~$0.26/s at 768P) - for tight close-ups and "
+                               "lip-critical shots, or re-sync an existing take via video_url/video_path "
+                               "(+$0.20/s, no new plate). Single-pass avatars: kling-v2-standard $0.0562/s, "
+                               "veed-fabric-1.0 $0.08/s, kling-v2-pro $0.115/s, omnihuman-1.5 $0.16/s",
             },
             "prompt": {
                 "type": "string",
@@ -255,11 +264,20 @@ class FalAvatar(BaseTool):
         return dst
 
     @staticmethod
-    def _mux_audio(video: Path, audio: Path, dst: Path) -> Path:
-        """Replace the video's soundtrack with ``audio`` verbatim (stream-copies the video)."""
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-i", str(audio),
-                        "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                        "-shortest", str(dst)], check=True, timeout=300)
+    def _mux_audio(video: Path, audio: Path, dst: Path, trim_seconds: float | None = None) -> Path:
+        """Replace the video's soundtrack with ``audio`` verbatim. Without a trim the video is
+        stream-copied; with ``trim_seconds`` (native mode: cut the plate's headroom at the line's
+        end) the video is re-encoded for a frame-exact cut - stream copy + -shortest could only
+        cut at a keyframe and leave the presenter mouthing past the voice."""
+        if trim_seconds is None:
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-i", str(audio),
+                            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                            "-shortest", str(dst)], check=True, timeout=300)
+        else:
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-i", str(audio),
+                            "-t", f"{float(trim_seconds):.3f}", "-map", "0:v", "-map", "1:a",
+                            "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", "-b:a", "192k", "-shortest", str(dst)], check=True, timeout=600)
         return dst
 
     def _audio_seconds(self, inputs: dict[str, Any]) -> float | None:
@@ -285,13 +303,16 @@ class FalAvatar(BaseTool):
         if inputs.get("video_url") or inputs.get("video_path"):
             per_second = self._SYNC_PER_S
         else:
-            model = inputs.get("model") or self.COMPOSITE
-            if model == self.COMPOSITE:
+            model = inputs.get("model") or self.NATIVE
+            if model == self.NATIVE:
+                per_second = self._plate_rate(inputs)
+            elif model == self.COMPOSITE:
                 per_second = self._plate_rate(inputs) + self._SYNC_PER_S
             elif model in self._MODELS:
                 per_second = self._MODELS[model][1]
             else:
-                raise ValueError(f"model must be one of: {self.COMPOSITE}, {', '.join(self._MODELS)}")
+                raise ValueError(f"model must be one of: {self.NATIVE}, {self.COMPOSITE}, "
+                                 f"{', '.join(self._MODELS)}")
         # Fal bills whole output seconds, rounded up (billing events, 2026-11-09).
         return round(per_second * math.ceil(float(seconds)), 4)
 
@@ -369,7 +390,7 @@ class FalAvatar(BaseTool):
 
         if inputs.get("resume_job"):
             job = dict(inputs["resume_job"])
-            if job.get("mode") in ("composite", "sync"):
+            if job.get("mode") in ("composite", "sync", "native"):
                 return self._run_chain(inputs, api_key, resume=job)
             return self._run_job(inputs, api_key, None, job)
 
@@ -380,12 +401,13 @@ class FalAvatar(BaseTool):
         if not (inputs.get("image_url") or inputs.get("image_path")):
             return ToolResult(success=False, error="image_url or image_path is required")
 
-        model = inputs.get("model") or self.COMPOSITE
-        if model == self.COMPOSITE:
+        model = inputs.get("model") or self.NATIVE
+        if model in (self.NATIVE, self.COMPOSITE):
             return self._run_chain(inputs, api_key)
         if model not in self._MODELS:
             return ToolResult(success=False,
-                              error=f"model must be one of: {self.COMPOSITE}, {', '.join(self._MODELS)}")
+                              error=f"model must be one of: {self.NATIVE}, {self.COMPOSITE}, "
+                                    f"{', '.join(self._MODELS)}")
 
         # -- single-pass avatar models ---------------------------------------------------
         endpoint, per_second = self._MODELS[model]
@@ -507,9 +529,15 @@ class FalAvatar(BaseTool):
                 if not (inputs.get("video_url") or inputs.get("video_path")) and audio_seconds > 14.5:
                     raise ValueError(f"audio is {audio_seconds:.1f}s; the acting plate caps at 15s - split the take")
                 audio_url = self._upload(audio_local, api_key)
-                mode = "sync" if (inputs.get("video_url") or inputs.get("video_path")) else "composite"
+                if inputs.get("video_url") or inputs.get("video_path"):
+                    mode = "sync"
+                elif (inputs.get("model") or self.NATIVE) == self.NATIVE:
+                    mode = "native"  # the plate alone: trimmed to the line, verbatim voice muxed
+                else:
+                    mode = "composite"
                 job = {
-                    "tool": self.name, "model": self.COMPOSITE, "mode": mode, "stage": "start",
+                    "tool": self.name, "model": self.NATIVE if mode == "native" else self.COMPOSITE,
+                    "mode": mode, "stage": "start",
                     "audio_url": audio_url, "audio_local": str(audio_local),
                     "audio_seconds": round(float(audio_seconds), 3), "costs": {},
                 }
@@ -517,8 +545,8 @@ class FalAvatar(BaseTool):
             resolution = inputs.get("resolution") or "768P"
             sync_resolution = "480P" if resolution == "480P" else "768P"
 
-            # 2) acting plate conditioned on the audio (composite mode only) ---------------
-            if job["mode"] == "composite" and "plate_video_url" not in job:
+            # 2) acting plate conditioned on the audio (composite and native modes) ---------
+            if job["mode"] in ("composite", "native") and "plate_video_url" not in job:
                 if job.get("stage") != "plate":  # fresh submit (not resuming a pending plate)
                     duration = min(15, max(2, math.ceil(job["audio_seconds"] + 0.6)))
                     payload = {
@@ -541,8 +569,8 @@ class FalAvatar(BaseTool):
                 job.pop("response_url", None)
                 save_job(inputs.get("job_path"), job)
 
-            # 3) lip-sync pass -------------------------------------------------------------
-            if "sync_video_url" not in job:
+            # 3) lip-sync pass (skipped in native mode: the plate's own lips ship) ----------
+            if job["mode"] != "native" and "sync_video_url" not in job:
                 if job.get("stage") != "sync":
                     source_url = (job.get("plate_video_url") or inputs.get("video_url")
                                   or self._upload(Path(inputs["video_path"]), api_key))
@@ -558,7 +586,11 @@ class FalAvatar(BaseTool):
                 save_job(inputs.get("job_path"), job)
 
             # 4) download + re-mux the verbatim audio + gate the delivered file -------------
-            blob = requests.get(job["sync_video_url"], timeout=300)
+            # Native mode ships the plate itself, trimmed to the line: the plate is generated
+            # 0.6s+ long (headroom the sync pass would normally cut), so without a frame-exact
+            # -t trim the presenter keeps mouthing after the voice ends.
+            source_url = job["plate_video_url"] if job["mode"] == "native" else job["sync_video_url"]
+            blob = requests.get(source_url, timeout=300)
             blob.raise_for_status()
             if not blob.content:
                 raise ValueError("Empty fal video output")
@@ -570,7 +602,8 @@ class FalAvatar(BaseTool):
                 blob = requests.get(job["audio_url"], timeout=300)
                 blob.raise_for_status()
                 audio_local.write_bytes(blob.content)
-            self._mux_audio(synced, audio_local, output_path)
+            trim = float(job["audio_seconds"]) if job["mode"] == "native" else None
+            self._mux_audio(synced, audio_local, output_path, trim_seconds=trim)
             synced.unlink(missing_ok=True)
             peak = self._audio_peak(output_path)
             if peak is not None and peak < self._MIN_AUDIO_PEAK:
@@ -584,15 +617,17 @@ class FalAvatar(BaseTool):
             )
         probe = probe_output(output_path)
         cost = round(sum(job["costs"].values()), 4) if job["costs"] else None
+        model_label = {"composite": self.COMPOSITE, "native": self.NATIVE}.get(job["mode"], "h3max-lipsync-fix")
+        endpoints = {"composite": [self._PLATE_ENDPOINT, self._SYNC_ENDPOINT],
+                     "native": [self._PLATE_ENDPOINT]}.get(job["mode"], [self._SYNC_ENDPOINT])
         data = {
             "provider": self.provider,
-            "model": self.COMPOSITE if job["mode"] == "composite" else "h3max-lipsync-fix",
+            "model": model_label,
             "mode": job["mode"],
-            "endpoints": [self._PLATE_ENDPOINT, self._SYNC_ENDPOINT] if job["mode"] == "composite"
-                         else [self._SYNC_ENDPOINT],
+            "endpoints": endpoints,
             "output": str(output_path),
             "plate_video_url": job.get("plate_video_url"),
-            "video_url": job.get("sync_video_url"),
+            "video_url": job.get("sync_video_url") or job.get("plate_video_url"),
             "cost_breakdown": job["costs"],
             "resume_job": {k: v for k, v in job.items() if k != "audio_local"},
             "request_ids": [str(r) for r in job.get("request_ids") or [] if r],

@@ -119,13 +119,18 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
    spoken lines with `fal_elevenlabs_tts` (model_id eleven-v3; pick one fitting voice and keep it
    for every line). Pass raw TTS through silence trimming (`trim_silence: true` where the tool
    supports it); never hand-roll audio filters.
-5. Every on-camera talking shot comes from tool `fal_avatar` with `model: "h3max-acting"` - read its
-   skill in `.agents/skills/fal-avatar/` before the first call and follow its audio contract and
-   prompt rules. Never use a video model's own generated speech; never add a second voice. The
-   delivered take's audio is used verbatim in the mix.
+5. Every on-camera talking shot comes from tool `fal_avatar` - read its skill in
+   `.agents/skills/fal-avatar/` before the first call and follow its audio contract and prompt
+   rules. The default take model is `"h3max"` (one audio-conditioned acting generation with
+   native lips, $0.056/s at 768P). Reserve `"h3max-acting"` (adds a frame-accurate lip-sync
+   pass, ~$0.26/s) for tight close-ups and lip-critical shots - and when QC finds a delivered
+   take's lips wanting, prefer the lip-fix mode on THAT take (pass the take as `video_path`
+   with its line's audio, +$0.20/s, no new plate) over regenerating. Never use a video model's
+   own generated speech; never add a second voice. The delivered take's audio is used verbatim
+   in the mix.
 6. Every scene moves - this is a video, not a slideshow. A scene not covered by an avatar take is
    animated from its still with tool `h3_max_video` (model `h3-max`, operation image_to_video,
-   about $0.035 per output second; skill in `.agents/skills/minimax-h3/`): generate the still,
+   about $0.056 per output second at 768P; skill in `.agents/skills/minimax-h3/`): generate the still,
    then give it real subject and camera motion with a clear motion prompt. A slow pan or zoom
    over a static image is a last resort for when the budget is already spent, never the plan,
    and a fully static frame is allowed only as a deliberate closing beat under the CTA.
