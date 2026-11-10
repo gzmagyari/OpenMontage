@@ -212,3 +212,20 @@ def test_what_the_first_rehearsal_taught_is_written_down():
     assert '`archivoBlack` "Archivo Black"' in reference   # the family name tokens.ts needs
     # The guide's preloaded copy is the reference, word for word.
     assert reference in guide
+
+
+def test_the_live_smoke_runs_the_launch_the_guide_gives():
+    """No rehearsal can exercise the paid batch's launch, so the one-cent session smoke runs it
+    with a stand-in batch. It must be the guide's own two commands, or it proves nothing."""
+    import ast
+    source = _read(REPO / "scripts" / "agent_session_smoke.py")
+    constants = {node.targets[0].id: ast.literal_eval(node.value) for node in ast.parse(source).body
+                 if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                 and node.targets[0].id in {"BATCH_LAUNCH", "BATCH_WAIT"}}
+    assert set(constants) == {"BATCH_LAUNCH", "BATCH_WAIT"}
+    guide = _read(REPO / "AGENT_GUIDE.md")
+    asset = _read(SPOKE / "asset-director.md")
+    for command in constants.values():
+        assert command in guide, command
+        assert command in asset, command
+    assert "{BATCH_LAUNCH}" in source and "{BATCH_WAIT}" in source  # and the prompt really uses them
