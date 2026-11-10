@@ -149,8 +149,15 @@ Orthogonal to *runtime* is *authoring mode*: **how** the composition is built. P
 means when it says "compose with the video kit". It reuses ENGINE, never a finished look: shot
 sequencing, cuts pinned to spoken words, transitions, clip playback, captions, the soundtrack and
 the export are a tested library (`remotion-composer/kit/`; its reference is preloaded at the end
-of this guide), and the director writes the video as an edit file. What is creative stays
-yours: the look is copied into the job as editable code and MUST be restyled for the video
+of this guide), and the director writes the video as an edit file. This holds for whatever
+pipeline the request routes to. A pipeline's stage skills keep their say on WHAT the piece needs
+(structure, pacing, grade, what each beat shows); where one tells you to choose a render runtime,
+to assemble stock scene-types, to hand-author a composition or to render with `video_compose`,
+the kit replaces that step: record `render_runtime: "remotion"` as given (the kit renders with
+Remotion), build the piece as the edit, and render it with `kit render`. The lock rules of a
+headless job are the same in every pipeline (checkpoint-protocol -> "Boxed-Job Efficiency";
+the batch and burst patterns in `skills/pipelines/avatar-spokesperson/asset-director.md`).
+What is creative stays yours: the look is copied into the job as editable code and MUST be restyled for the video
 (colours, type, the feel of its cards - `kit check` refuses a final render while it is
 untouched), and any shot or overlay may be a scene written for this video. Close with the same
 distinctness review: could this be any other product's video? If yes, restyle further or write

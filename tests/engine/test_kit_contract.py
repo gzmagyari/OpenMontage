@@ -46,6 +46,22 @@ def test_the_brief_binds_every_job_to_the_kit():
     assert "PREPARED audio" in brief and "`trim_silence` off" in brief
 
 
+def test_the_kit_replaces_the_render_step_of_every_pipeline():
+    # Only the presenter pipeline's stage skills were rewritten for the kit. A request that
+    # routes elsewhere (footage only, text only, a screen demo) meets stage skills that still
+    # say `video_compose` and "choose a runtime", so the brief and the guide say which wins.
+    brief = _brief()
+    assert "whatever pipeline the guide routes the request to" in brief
+    assert "choose a render runtime, assemble stock scene-types, hand-author a composition or render with `video_compose`, do this instead" in brief
+    guide = _flat(_read(REPO / "AGENT_GUIDE.md"))
+    assert "This holds for whatever pipeline the request routes to." in guide
+    assert "the kit replaces that step" in guide and 'record `render_runtime: "remotion"` as given' in guide
+    assert "The lock rules of a headless job are the same in every pipeline" in guide
+    # The conflict is real: other pipelines' compose skills do name the old path.
+    others = [p for p in (REPO / "skills" / "pipelines").glob("*/compose-director.md") if p.parent.name != "avatar-spokesperson"]
+    assert len(others) >= 8 and sum("video_compose" in _read(p) for p in others) >= 4
+
+
 def test_the_brief_turns_client_options_into_edit_settings():
     assert '"captions": {"enabled": false}' in _brief(captions=False)
     assert "name none in the edit" in _brief(music=False)

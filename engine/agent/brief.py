@@ -142,7 +142,10 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
 {caption_rule}
 {music_rule}
 10. Compose with the video kit (its reference is preloaded at the end of AGENT_GUIDE.md; run
-    every `kit` command from the project directory).
+    every `kit` command from the project directory). This is the composition and render path
+    of this job whatever pipeline the guide routes the request to: a stage skill keeps its say
+    on what the piece needs, but where it tells you to choose a render runtime, assemble stock
+    scene-types, hand-author a composition or render with `video_compose`, do this instead.
     The numbered shot list of your plan IS `{project}/composition/edit.json`: the voice lines
     with the exact script, what is on screen in order, every cut pinned to a spoken word, a line
     or a second, and every overlay. Restyle the look that was copied into the job
