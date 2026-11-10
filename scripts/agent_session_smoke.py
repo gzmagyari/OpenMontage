@@ -57,10 +57,10 @@ AVATAR_CALL = (
     "'output_path':'/tmp/agent_session_smoke.mp4'}); print(r.success); print(r.error)\""
 )
 # A take priced from its audio, the path given as `kit voice` lists it: relative to the project.
-# Twelve seconds of tone is a 13-second plate, $0.73 at 768P: above the budget, so the desk denies
+# Twelve seconds of tone is a 12-second plate, $0.67 at 768P: above the budget, so the desk denies
 # it once it has found the file and quoted it. Nothing is bought.
 TAKE_SECONDS = 12
-TAKE_QUOTE_USD = 0.728
+TAKE_QUOTE_USD = 0.672
 TAKE_AUDIO = "assets/audio/voice_A.wav"
 # Put in the project before the session starts, so the step the session runs is one short line.
 TAKE_SCRIPT = f"""import sys

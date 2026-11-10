@@ -24,7 +24,8 @@ Use `h3max` for presenter takes: it acts like a real creator video (gestures, le
 and its lips are good enough for standard shots. Reserve `h3max-acting` for tight close-ups and
 lip-critical shots. When QC rejects a delivered take's LIPS, run the fix mode on that take
 instead of regenerating it. Use a single-pass avatar when a calm, steady talking head is wanted.
-Fal bills whole seconds, rounded up.
+Fal bills whole seconds, rounded up; an H3 Max plate is billed for the seconds it is asked for,
+which is the fewest whose clip holds the line (4 s for a 4.1 s line, 8 s for a 7.4 s one).
 
 ## Call pattern
 
@@ -80,6 +81,14 @@ Prompt rules (learned the expensive way):
   takes, and lips start late unpredictably.
 - **Never use H3 Max / Hailuo `reference_audio_urls` for speech**: reference audio is a *style*
   reference - the model re-voices the words in a similar voice (drift again).
-- H3 Max i2v `target_audio_url` **alone** is not accurate lip-sync (it conditions the acting
-  loosely; with silent audio the mouth goes dead). That is exactly why the composite runs the
-  dedicated lip-sync pass - do not skip it for on-camera speech.
+- **Never call H3 Max i2v with `target_audio_url` yourself** for a talking take; go through
+  `fal_avatar`. The model returns clips of fixed lengths only (22 + 17n frames at 24 a second,
+  so up to 0.7 s longer than asked) and lays the performance of the audio over the WHOLE clip.
+  Audio shorter than the clip is acted slower than it sounds: a 4.1 s line in a 5.2 s clip
+  moved its lips at 80% of the voice's pace and was a full second behind by its last word.
+  That, not the model's lips, is what made native takes look out of sync until 2026-11-10.
+  `fal_avatar` sends the line followed by silence up to exactly the clip's length, so nothing
+  is stretched (the mouth rests through that silence), and cuts the take at the line's end.
+  A track that is silent throughout gives a dead mouth, which is why the tool refuses one.
+- If a take's answer carries a `note` that the model returned a clip of another length, the
+  tool played that clip faster to keep the lips on the words. Watch that take before using it.

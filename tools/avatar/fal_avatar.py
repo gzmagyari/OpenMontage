@@ -121,16 +121,38 @@ class FalAvatar(BaseTool):
     _POLL_INTERVAL_SECONDS = 5
     _MAX_WAIT_SECONDS = 1200
     _MIN_AUDIO_PEAK = 0.005  # below this the track is treated as silent and refused
-    # The plate is asked for the line plus this much, so the last word is never cut short; the
-    # lip-sync pass, or the native trim, cuts it back to the line.
-    _PLATE_HEADROOM_SECONDS = 0.6
+    # H3 Max makes clips of 22 + 17n frames at 24 a second and nothing between (0.92 s, 1.63,
+    # 2.33 ... 7.29, 8.00 ... 15.08; every take of videos 713-716 and the test takes of
+    # 2026-11-10): asked for a length, it returns the first of these that is not shorter. And
+    # it lays the performance of the audio it is given over the WHOLE clip. Audio shorter than
+    # the clip is therefore acted slower than it sounds: a 4.13 s line in a 5.17 s clip moved
+    # its lips at 80% of the voice's pace and was a second behind by its last word. So the
+    # model is sent the line followed by silence up to exactly the clip's length, which leaves
+    # it nothing to stretch; the lip-sync pass, or the native trim, cuts the clip back to the line.
+    _CLIP_FPS = 24
+    _CLIP_FIRST_FRAMES = 22
+    _CLIP_STEP_FRAMES = 17
+    # The clip holds the line and at least this much after it, so the last word is never cut short.
+    _PLATE_TAIL_SECONDS = 0.1
+
+    @classmethod
+    def _clip_frames(cls, asked_seconds: float) -> int:
+        """Frames of the clip H3 Max returns when asked for this many seconds."""
+        frames = cls._CLIP_FIRST_FRAMES
+        while frames < float(asked_seconds) * cls._CLIP_FPS - 1e-6:
+            frames += cls._CLIP_STEP_FRAMES
+        return frames
 
     @classmethod
     def _plate_seconds(cls, audio_seconds: float) -> int:
-        """The plate length asked of fal for a line: whole seconds, the line plus headroom
-        rounded up, between 2 and 15. It is also what fal bills. Counting the line alone priced
-        video 714's 5.54 s take at 6 seconds; fal had been asked for 7 and billed 7."""
-        return min(15, max(2, math.ceil(float(audio_seconds) + cls._PLATE_HEADROOM_SECONDS)))
+        """The plate length asked of fal for a line: the fewest whole seconds, between 2 and 15,
+        whose clip holds the line and its tail. It is also what fal bills: the length asked
+        for, not the line's and not the returned clip's."""
+        need = (float(audio_seconds) + cls._PLATE_TAIL_SECONDS) * cls._CLIP_FPS
+        for seconds in range(2, 15):
+            if cls._clip_frames(seconds) >= need - 1e-6:
+                return seconds
+        return 15
 
     input_schema = {
         "type": "object",
@@ -274,21 +296,86 @@ class FalAvatar(BaseTool):
         return dst
 
     @staticmethod
-    def _mux_audio(video: Path, audio: Path, dst: Path, trim_seconds: float | None = None) -> Path:
+    def _pad_audio(src: Path, dst: Path, seconds: float) -> Path:
+        """``src`` followed by silence up to exactly ``seconds``, as WAV: what the acting model
+        is sent, so that its clip and its audio are the same length (see ``_clip_frames``)."""
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn",
+                        "-af", f"apad=whole_dur={float(seconds):.6f}", "-t", f"{float(seconds):.6f}",
+                        "-c:a", "pcm_s16le", str(dst)], check=True, timeout=120)
+        return dst
+
+    @staticmethod
+    def _clip_facts(path: Path) -> tuple[int, float] | None:
+        """A video's frame count and frames a second; None when they cannot be read."""
+        if not shutil.which("ffprobe"):
+            return None
+        try:
+            proc = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                 "stream=nb_frames,r_frame_rate", "-of", "default=noprint_wrappers=1", str(path)],
+                capture_output=True, text=True, timeout=30, check=False)
+            facts = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
+            num, den = facts["r_frame_rate"].split("/")
+            return int(facts["nb_frames"]), float(num) / float(den)
+        except (OSError, KeyError, ValueError, ZeroDivisionError, subprocess.TimeoutExpired):
+            return None
+
+    @classmethod
+    def _clip_seconds(cls, path: Path) -> float | None:
+        """Length of a video's picture, counted in frames; None when it cannot be read."""
+        facts = cls._clip_facts(path)
+        return facts[0] / facts[1] if facts else None
+
+    @classmethod
+    def _plate_fit(cls, clip_seconds: float | None, sent_seconds: float | None) -> float | None:
+        """How much faster the returned clip has to play for its lips to keep the voice's pace:
+        the clip's length over the length of the audio the model was sent, or None when they
+        agree to within a frame and a half (the expected case: the audio was padded to the
+        clip's length). A number here means the model returned a length this tool did not
+        predict; playing the clip at that speed puts the lips back on the words."""
+        if not clip_seconds or not sent_seconds:
+            return None
+        if abs(float(clip_seconds) - float(sent_seconds)) <= 1.5 / cls._CLIP_FPS:
+            return None
+        return round(float(clip_seconds) / float(sent_seconds), 4)
+
+    @staticmethod
+    def _mux_audio(video: Path, audio: Path, dst: Path, trim_seconds: float | None = None,
+                   speed: float | None = None) -> Path:
         """Replace the video's soundtrack with ``audio`` verbatim. Without a trim the video is
-        stream-copied; with ``trim_seconds`` (native mode: cut the plate's headroom at the line's
-        end) the video is re-encoded for a frame-exact cut - stream copy + -shortest could only
-        cut at a keyframe and leave the presenter mouthing past the voice."""
+        stream-copied; with ``trim_seconds`` (native mode: cut the plate's silent tail at the
+        line's end) the video is re-encoded for a frame-exact cut - stream copy + -shortest could
+        only cut at a keyframe and leave the picture running past the voice. ``speed`` (with a
+        trim only) plays the picture that much faster first, at the frame rate it came in."""
         if trim_seconds is None:
             subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-i", str(audio),
                             "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
                             "-shortest", str(dst)], check=True, timeout=300)
         else:
-            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-i", str(audio),
+            fit = []
+            if speed:
+                facts = FalAvatar._clip_facts(video)
+                rate = f",fps={facts[1]:.6f}" if facts else ""
+                fit = ["-vf", f"setpts=PTS/{float(speed):.6f}{rate}"]
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-i", str(audio), *fit,
                             "-t", f"{float(trim_seconds):.3f}", "-map", "0:v", "-map", "1:a",
                             "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-pix_fmt", "yuv420p",
                             "-c:a", "aac", "-b:a", "192k", "-shortest", str(dst)], check=True, timeout=600)
         return dst
+
+    @staticmethod
+    def _line_audio(job: dict, work: Path, stem: str) -> Path:
+        """The line's audio as a local file; fetched again when the job resumes elsewhere."""
+        import requests
+
+        local = Path(job["audio_local"]) if job.get("audio_local") else None
+        if local is not None and local.is_file():
+            return local
+        local = work / f".{stem}.audio"
+        blob = requests.get(job["audio_url"], timeout=300)
+        blob.raise_for_status()
+        local.write_bytes(blob.content)
+        return local
 
     def _audio_seconds(self, inputs: dict[str, Any]) -> float | None:
         if inputs.get("audio_duration_seconds"):
@@ -563,11 +650,21 @@ class FalAvatar(BaseTool):
                 if job.get("stage") != "plate":  # fresh submit (not resuming a pending plate)
                     duration = self._plate_seconds(job["audio_seconds"])
                     job["plate_seconds"] = duration
+                    # The model acts its audio over the whole clip it returns, so it is sent the
+                    # line and then silence, exactly as long as that clip (see _clip_frames).
+                    clip_seconds = self._clip_frames(duration) / self._CLIP_FPS
+                    padded = self._pad_audio(self._line_audio(job, work, output_path.stem),
+                                             work / f".{output_path.stem}.plate.wav", clip_seconds)
+                    try:
+                        job["plate_audio_url"] = self._upload(padded, api_key)
+                    finally:
+                        padded.unlink(missing_ok=True)
+                    job["plate_audio_seconds"] = round(clip_seconds, 3)
                     payload = {
                         "prompt": inputs.get("prompt") or "The person talks straight into the camera, natural and "
                                                           "energetic, lips following the words of the soundtrack.",
                         "image_url": inputs.get("image_url") or self._upload(Path(inputs["image_path"]), api_key),
-                        "target_audio_url": job["audio_url"],
+                        "target_audio_url": job["plate_audio_url"],
                         "duration": duration,
                         "resolution": resolution,
                         "prompt_expansion_mode": "disabled",
@@ -602,9 +699,9 @@ class FalAvatar(BaseTool):
                 save_job(inputs.get("job_path"), job)
 
             # 4) download + re-mux the verbatim audio + gate the delivered file -------------
-            # Native mode ships the plate itself, trimmed to the line: the plate is generated
-            # 0.6s+ long (headroom the sync pass would normally cut), so without a frame-exact
-            # -t trim the presenter keeps mouthing after the voice ends.
+            # Native mode ships the plate itself, trimmed to the line: the plate runs on past
+            # the line (the silent tail the sync pass would normally cut), so without a
+            # frame-exact -t trim the picture outlasts the voice.
             source_url = job["plate_video_url"] if job["mode"] == "native" else job["sync_video_url"]
             blob = requests.get(source_url, timeout=300)
             blob.raise_for_status()
@@ -612,14 +709,23 @@ class FalAvatar(BaseTool):
                 raise ValueError("Empty fal video output")
             synced = work / f".{output_path.stem}.synced.mp4"
             synced.write_bytes(blob.content)
-            audio_local = Path(job.get("audio_local", ""))
-            if not audio_local.exists():  # resuming in a fresh environment: refetch the audio
-                audio_local = work / f".{output_path.stem}.audio"
-                blob = requests.get(job["audio_url"], timeout=300)
-                blob.raise_for_status()
-                audio_local.write_bytes(blob.content)
-            trim = float(job["audio_seconds"]) if job["mode"] == "native" else None
-            self._mux_audio(synced, audio_local, output_path, trim_seconds=trim)
+            audio_local = self._line_audio(job, work, output_path.stem)
+            if job["mode"] == "native":
+                # The plate's lips are the delivered lips. They keep the voice's pace only when
+                # the clip is as long as the audio the model was sent; a clip of another length
+                # (not seen so far) is played at the speed that puts them back on the words.
+                clip_seconds = self._clip_seconds(synced)
+                if clip_seconds:
+                    job["plate_clip_seconds"] = round(clip_seconds, 3)
+                fit = self._plate_fit(clip_seconds, job.get("plate_audio_seconds"))
+                if fit:
+                    job["plate_fit"] = fit
+                    self._mux_audio(synced, audio_local, output_path,
+                                    trim_seconds=float(job["audio_seconds"]), speed=fit)
+                else:
+                    self._mux_audio(synced, audio_local, output_path, trim_seconds=float(job["audio_seconds"]))
+            else:
+                self._mux_audio(synced, audio_local, output_path, trim_seconds=None)
             synced.unlink(missing_ok=True)
             peak = self._audio_peak(output_path)
             if peak is not None and peak < self._MIN_AUDIO_PEAK:
@@ -650,6 +756,10 @@ class FalAvatar(BaseTool):
             "cost_status": "unquoted" if cost is None else "estimated",
             **probe,
         }
+        if job.get("plate_fit"):
+            data["note"] = (f"the model returned a clip of {job.get('plate_clip_seconds')} s for audio of "
+                            f"{job.get('plate_audio_seconds')} s; the take plays it {job['plate_fit']} times "
+                            "faster so the lips keep the voice's pace")
         return ToolResult(
             success=True,
             data=data,
