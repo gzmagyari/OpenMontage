@@ -265,6 +265,7 @@ def test_stage_tracker_follows_the_tools_that_ran_and_never_regresses():
     assert tracker.update("tts_selector") is None
     assert tracker.update("transcriber") == ("captions", 55)
     # Buying the music is not mixing it: only the mixer marks the audio mix.
+    assert tracker.update("fal_lyria_music") is None
     assert tracker.update("fal_elevenlabs_music") is None
     assert tracker.update("audio_mixer") == ("audio mix", 65)
     assert tracker.update("video_compose") == ("render", 80)

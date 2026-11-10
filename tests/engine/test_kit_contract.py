@@ -98,7 +98,12 @@ def test_the_brief_turns_client_options_into_edit_settings():
     assert "name none in the edit" in _brief(music=False)
     assert "`music.file`" in _brief()
     # The music tool is named: video 713's batch first tried one that has no key here, and failed.
-    assert "generate the bed with tool `fal_elevenlabs_music`" in _brief()
+    # Since 2026-11-10 it is Lyria 3.5 ($0.10 a track against $0.60), with the ElevenLabs tool
+    # as the named fallback; the director is told the track comes back longer than the video.
+    assert "generate the bed with tool `fal_lyria_music`" in _brief()
+    assert "`fal_elevenlabs_music` ($0.60 per started minute, exact length) is the fallback" in _brief()
+    assert "`kit mix` cuts at the video's end and fades out" in _brief()
+    assert "fal_lyria_music" not in _brief(music=False)
     assert "fal_elevenlabs_music" not in _brief(music=False)
 
 

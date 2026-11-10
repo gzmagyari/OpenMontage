@@ -82,10 +82,15 @@ def build_brief(
         '8. No captions (the client disabled them): set `"captions": {"enabled": false}` in the edit.'
     )
     music_rule = (
-        "9. Background music is wanted: generate the bed with tool `fal_elevenlabs_music` (a music "
-        "tool the provider menu lists as unavailable has no key here and only fails), name it in the "
-        "edit (`music.file`) and build the soundtrack with `kit mix` (voice ducking and -14 LUFS are "
-        "built in)."
+        "9. Background music is wanted: generate the bed with tool `fal_lyria_music` ($0.10 a track: "
+        "describe genre, mood, instruments and tempo, and give `duration_seconds` = the video's "
+        "length; it returns a track longer than the video, about a minute for a short one, which "
+        "`kit mix` cuts at the video's end and fades out; a section plan with timestamps is "
+        "followed in order, not to the second). `fal_elevenlabs_music` "
+        "($0.60 per started minute, exact length) is the fallback when that fails or the client needs "
+        "a hit on an exact second; a music tool the provider menu lists as unavailable has no key "
+        "here and only fails. Name the track in the edit (`music.file`) and build the soundtrack with "
+        "`kit mix` (voice ducking and -14 LUFS are built in)."
         if music else
         "9. No background music (the client disabled it): name none in the edit; `kit mix` still "
         "builds the voice track at -14 LUFS."

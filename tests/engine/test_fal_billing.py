@@ -135,8 +135,9 @@ def test_the_voice_and_music_tools_hand_their_request_ids_to_the_ledger():
 
     from tools.audio.fal_elevenlabs_music import FalElevenLabsMusic
     from tools.audio.fal_elevenlabs_tts import FalElevenLabsTTS
+    from tools.audio.fal_lyria_music import FalLyriaMusic
 
-    for tool in (FalElevenLabsMusic, FalElevenLabsTTS):
+    for tool in (FalElevenLabsMusic, FalElevenLabsTTS, FalLyriaMusic):
         assert '"request_ids"' in inspect.getsource(tool), tool.__name__
 
 

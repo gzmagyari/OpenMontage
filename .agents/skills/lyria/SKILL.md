@@ -9,6 +9,27 @@ Use Lyria 3 as a single-turn music generator. Keep it distinct from Lyria RealTi
 
 Read [references/api-and-prompting.md](references/api-and-prompting.md) when choosing a model, designing vocals or custom lyrics, using image inputs, debugging the response, or checking current limits and pricing.
 
+## Through fal.ai: `fal_lyria_music` (the default music bed in video jobs)
+
+`fal_lyria_music` calls Lyria 3.5 on fal.ai with the shared `FAL_KEY`; it needs no Google
+credential, unlike `google_music` below. Measured on real tracks (2026-11-10):
+
+- **$0.10 a track, flat**, whatever its length; about 30 seconds of generation.
+- **The prompt is the only input.** Give the tool `prompt` (genre, mood, instruments, tempo,
+  an optional section plan) and `duration_seconds` = the length the track has to cover. The
+  tool adds the instrumental rule and a length wish itself.
+- **It returns about a minute**, even when 30 seconds are asked for, and stretches a timed
+  plan over that minute. The video kit's `kit mix` cuts the music at the video's end and
+  fades it out, so nothing has to be trimmed by hand. The tool's answer reports the file's
+  real length.
+- **A section plan with timestamps is followed in order, not to the second.** Do not promise
+  a hit on an exact second; `fal_elevenlabs_music` has exact length when that is needed.
+- The answer says `sung_words: true`, with a note, when the model sang although an
+  instrumental was asked for. Listen before using such a track, or generate again.
+
+The prompt-building advice below (purpose, genre, tempo, instrumentation, structure, mix,
+exclusions) applies to this tool as well.
+
 ## Required Workflow
 
 1. Confirm the intended role: underscore, loop, instrumental cue, or full song.

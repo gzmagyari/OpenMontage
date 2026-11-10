@@ -340,7 +340,8 @@ reference-image inputs are normalized to the provider's `images` array.
 
 **Tools unlocked:** `flux_image`, `recraft_image`, `seedream_image`,
 `kling_video`, `veo_video`, `seedance_video`, `gemini_omni_fal`,
-`minimax_fal_video`, `fal_elevenlabs_tts`, `fal_elevenlabs_music`
+`minimax_fal_video`, `fal_elevenlabs_tts`, `fal_lyria_music` (the default music bed:
+Lyria 3.5, $0.10 a track), `fal_elevenlabs_music` (exact length, $0.60 per started minute)
 **Env var:** `FAL_KEY`
 
 #### Setup
