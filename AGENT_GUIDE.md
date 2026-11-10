@@ -930,6 +930,11 @@ so read the takes to film from this file, not from the script.
 }
 ```
 
+`voice.lines` holds every spoken line in order, with its exact words. `"take": true` means a
+presenter is filmed saying it (`{"take": "A"}` then shows it); leave `take` out for a
+voice-over that is only heard. A video with no voice has no lines: give every main item `for`
+(or `until` in seconds), the video is as long as its items, and the soundtrack is the music.
+
 ### Moments
 
 Anywhere a time is wanted:
@@ -981,8 +986,7 @@ Layouts:
 `{"tag": "text"}`, `{"card": "name", "props": {...}}`, `{"text": "..."}` or
 `{"scene": "Name", "props": {...}}`, each with `from` and `until` (or `for`) and an optional
 `zone` (`upper`, `center`, `lower`, `full`). A tag sits in the upper zone, a `text` (a large
-statement; "
-" starts a new line) in the centre. Which cards exist and what props they
+statement; "\n" starts a new line) in the centre. Which cards exist and what props they
 take is the look's business: read `src/look/look.tsx`.
 
 ### captions

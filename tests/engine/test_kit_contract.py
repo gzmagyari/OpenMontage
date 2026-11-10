@@ -46,6 +46,16 @@ def test_the_brief_binds_every_job_to_the_kit():
     assert "PREPARED audio" in brief and "`trim_silence` off" in brief
 
 
+def test_the_kit_reference_covers_videos_without_a_presenter():
+    # The reference is all a director has for a request the presenter skills do not cover.
+    reference = _flat(_read(REPO / "remotion-composer" / "kit" / "README.md"))
+    assert "leave `take` out for a voice-over that is only heard" in reference
+    assert "A video with no voice has no lines: give every main item `for`" in reference
+    assert "or the music alone when there is no voice" in reference
+    # A line break written as two characters must stay two characters (it was once lost).
+    assert 'statement; "\\n" starts a new line' in reference and '("\\n" starts a line)' in reference
+
+
 def test_the_kit_replaces_the_render_step_of_every_pipeline():
     # Only the presenter pipeline's stage skills were rewritten for the kit. A request that
     # routes elsewhere (footage only, text only, a screen demo) meets stage skills that still
