@@ -372,3 +372,57 @@ def test_the_final_check_wants_a_soundtrack_that_fits_the_video(tmp_path: Path):
     assert drafted.returncode == 0 and "mix-stale" in drafted.stdout  # a warning there
     assert _kit(project, "mix").returncode == 0
     assert final().returncode == 0, final().stdout
+
+
+def _sound_curve(path: Path, seconds: float):
+    """Loudness over time, a value a millisecond (RMS over 10 ms), read independently of the kit."""
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-t", str(seconds), "-i", str(path), "-vn", "-ac", "1", "-ar", "8000",
+                          "-f", "s16le", "-"], capture_output=True, check=True).stdout
+    pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
+    squares = np.concatenate([[0.0], np.cumsum(pcm * pcm)])
+    starts = np.arange(0, len(pcm) - 80, 8)
+    return np.sqrt((squares[starts + 80] - squares[starts]) / 80)
+
+
+@pytest.mark.skipif(not CAN_RENDER, reason="needs the image's Chrome and Node modules (Linux)")
+def test_the_exports_sound_starts_with_its_picture(tmp_path: Path):
+    """The renderer leaves its audio encoder's lead-in in front of the sound (two AAC frames,
+    about 43 ms) with nothing in the file telling a player to skip it, so every export played its
+    sound that much behind the lips. `kit render` measures the lag against the soundtrack, cuts
+    exactly that much off the front, and measures again on the finished file."""
+    import numpy as np
+
+    project = tmp_path
+    assert _kit(project, "init", "--look", "pop").returncode == 0
+    (project / "assets" / "audio").mkdir(parents=True)
+    # Short beeps: a soundtrack whose position can be told to the millisecond.
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:duration=8",
+            "-af", "volume='if(lt(mod(t,0.6),0.2),1,0.03)':eval=frame", str(project / "assets/audio/music.wav"))
+    edit = {"canvas": {"size": "540x960", "fps": 30, "safe": "tiktok"}, "music": {"file": "assets/audio/music.wav"},
+            "captions": {"enabled": False}, "main": [{"color": "#203040", "for": 4}]}
+    (project / "composition" / "edit.json").write_text(json.dumps(edit), encoding="utf-8")
+    assert _kit(project, "mix").returncode == 0
+    rendered = _kit(project, "render", "--name", "sync", "--allow-starter-look")
+    assert rendered.returncode == 0, rendered.stdout + rendered.stderr
+    assert ", aac, sound on the picture, " in rendered.stdout, rendered.stdout
+
+    record = json.loads((project / "renders" / "kit_render.json").read_text(encoding="utf-8"))["sound_offset_ms"]
+    assert record["rendered"] is not None, "the lag of the renderer's own output was measured"
+    assert record["exported"] is not None and abs(record["exported"]) <= 3, record
+
+    # The same question asked without the kit's own measuring code.
+    want = _sound_curve(project / "assets/audio/mix.wav", 4.0)
+    got = _sound_curve(project / "exports/sync.mp4", 4.3)
+    n = min(len(want), len(got)) - 150
+
+    def agreement(lag: int) -> float:
+        return float(np.corrcoef(want[100:n], got[100 + lag:n + lag])[0, 1])
+
+    best = max(range(-100, 101), key=agreement)
+    assert abs(best) <= 3, f"the export's sound is {best} ms off its soundtrack (the raw render was {record['rendered']} ms)"
+    # And the raw render shows what was fixed: it is late by the encoder's lead-in.
+    raw = _sound_curve(project / "renders/sync_raw.mp4", 4.3)
+    m = min(len(want), len(raw)) - 150
+    raw_best = max(range(-100, 101), key=lambda lag: float(np.corrcoef(want[100:m], raw[100 + lag:m + lag])[0, 1]))
+    assert raw_best == record["rendered"] or abs(raw_best - record["rendered"]) <= 2

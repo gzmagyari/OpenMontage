@@ -612,6 +612,70 @@ function loudness(file) {
   }
 }
 
+/** The loudness of a file's sound over time: one value a millisecond (RMS over 10 ms), for the
+ *  first `seconds`. Enough to place one sound against another to about a millisecond. */
+function loudnessCurve(file, seconds) {
+  const r = spawnSync('ffmpeg', ['-v', 'error', '-t', String(seconds), '-i', file, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', '-'], {maxBuffer: 256 * 1024 * 1024});
+  if (r.status !== 0 || !r.stdout || r.stdout.length < 16000) return null;
+  const bytes = r.stdout;
+  const pcm = new Int16Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length - (bytes.length % 2)));
+  const hop = 8;
+  const win = 80;
+  const n = Math.floor((pcm.length - win) / hop);
+  if (n < 1000) return null;
+  const out = new Float32Array(n);
+  let sum = 0;
+  for (let i = 0; i < win; i++) sum += pcm[i] * pcm[i];
+  for (let k = 0; k < n; k++) {
+    out[k] = Math.sqrt(sum / win);
+    for (let i = 0; i < hop; i++) {
+      const gone = pcm[k * hop + i];
+      const come = pcm[k * hop + win + i];
+      sum += come * come - gone * gone;
+    }
+  }
+  return out;
+}
+
+/** How far the sound of `rendered` runs behind the soundtrack it was made from, in seconds
+ *  (positive: the export's sound is late against its picture), with how well the two agree.
+ *  null when it cannot be told (no sound, silence, or the two do not match).
+ *
+ *  Why this exists: the renderer writes its audio with the encoder's lead-in still in front
+ *  (two AAC frames, 42.7 ms at 48 kHz) and nothing in the file that tells a player to skip it,
+ *  so every export came out with its sound that much behind the lips (measured on video 713:
+ *  0.0428 s, the same in the raw render). */
+function soundLag(rendered, soundtrack) {
+  const want = loudnessCurve(soundtrack, 30);
+  const got = loudnessCurve(rendered, 30.5);
+  if (!want || !got) return null;
+  const n = Math.min(want.length, got.length) - 300;
+  if (n < 1000) return null;
+  let best = {agreement: -2, ms: 0};
+  for (let lag = -100; lag <= 250; lag++) {
+    let sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, count = 0;
+    for (let k = 100; k < n; k += 2) {
+      const a = want[k];
+      const b = got[k + lag];
+      sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b; count++;
+    }
+    const cov = sab / count - (sa / count) * (sb / count);
+    const va = saa / count - (sa / count) ** 2;
+    const vb = sbb / count - (sb / count) ** 2;
+    const agreement = va > 0 && vb > 0 ? cov / Math.sqrt(va * vb) : -2;
+    if (agreement > best.agreement) best = {agreement, ms: lag};
+  }
+  return best.agreement >= 0.8 ? {seconds: best.ms / 1000, agreement: +best.agreement.toFixed(3)} : null;
+}
+
+/** For the export line: where the finished file's sound sits against its picture. A fact for the
+ *  record, not a finding: nothing in the edit can move it. */
+function soundPlacement(offsets) {
+  if (!offsets || offsets.exported === null) return 'sound not checked against the picture';
+  if (Math.abs(offsets.exported) > 15) return `sound ${Math.abs(offsets.exported)} ms ${offsets.exported > 0 ? 'behind' : 'ahead of'} the picture`;
+  return 'sound on the picture';
+}
+
 async function render(prepared) {
   const {renderMedia} = await import('@remotion/renderer');
   const resolved = prepared.resolved;
@@ -635,22 +699,35 @@ async function render(prepared) {
   lap('render', t);
   t = Date.now();
   const hasAudio = Boolean(resolved.audio.mix);
+  const soundtrack = hasAudio ? path.join(project, resolved.audio.mix) : null;
   const tag = ['-bsf:v', 'h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1:video_full_range_flag=0', '-movflags', '+faststart'];
   let lufs = null;
   let corrected = false;
   const measured = hasAudio ? loudness(raw) : null;
+  // Sound against picture: the renderer's output carries its sound late (see soundLag). The
+  // lead-in is cut off by exactly what is measured, in the one audio pass this step makes anyway.
+  // Only a lag an encoder's lead-in can explain is cut (a few AAC frames, well under 0.1 s).
+  const lag = hasAudio ? soundLag(raw, soundtrack) : null;
+  const cut = lag && lag.seconds > 0.004 && lag.seconds <= 0.1 ? lag.seconds : 0;
+  const filters = [];
+  if (cut) filters.push(`atrim=start=${cut.toFixed(4)}`, 'asetpts=PTS-STARTPTS');
   if (measured && Math.abs(Number(measured.input_i) - TARGET_LUFS) > 1) {
-    // Off target: one audio-only pass, the picture is copied untouched.
-    const af = `loudnorm=I=${TARGET_LUFS}:TP=-1.5:LRA=11:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}:offset=${measured.target_offset}:linear=true`;
-    const r = spawnSync('ffmpeg', ['-y', '-v', 'error', '-i', raw, '-c:v', 'copy', ...tag, '-af', af, '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', out], {encoding: 'utf8'});
-    if (r.status !== 0) fail(`loudness correction failed: ${(r.stderr || '').trim().split('\n').pop()}`);
+    filters.push(`loudnorm=I=${TARGET_LUFS}:TP=-1.5:LRA=11:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}:offset=${measured.target_offset}:linear=true`);
     corrected = true;
-    lufs = Number(loudness(out)?.input_i ?? NaN);
+  }
+  if (filters.length) {
+    // One audio-only pass; the picture is copied untouched. Every export with sound goes through
+    // it now, so it keeps a high bitrate: this is the sound's second encode.
+    const r = spawnSync('ffmpeg', ['-y', '-v', 'error', '-i', raw, '-c:v', 'copy', ...tag, '-af', filters.join(','), '-c:a', 'aac', '-b:a', '256k', '-ar', '48000', out], {encoding: 'utf8'});
+    if (r.status !== 0) fail(`could not finish the export's sound: ${(r.stderr || '').trim().split('\n').pop()}`);
+    lufs = corrected ? Number(loudness(out)?.input_i ?? NaN) : measured ? Number(measured.input_i) : null;
   } else {
     const r = spawnSync('ffmpeg', ['-y', '-v', 'error', '-i', raw, '-c', 'copy', ...tag, out], {encoding: 'utf8'});
     if (r.status !== 0) fail(`could not finish the export: ${(r.stderr || '').trim().split('\n').pop()}`);
     lufs = measured ? Number(measured.input_i) : null;
   }
+  // Measured again on the finished file: this is the number that says sound and picture agree.
+  const after = hasAudio ? soundLag(out, soundtrack) : null;
   const probe = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,width,height,pix_fmt,color_range,color_space,r_frame_rate:format=duration,size', '-of', 'json', out], {encoding: 'utf8'});
   const info = JSON.parse(probe.stdout || '{}');
   const v = (info.streams ?? []).find((s) => s.codec_type === 'video') ?? {};
@@ -667,7 +744,11 @@ async function render(prepared) {
   const result = {
     file: path.relative(project, out), seconds: +Number(info.format?.duration ?? 0).toFixed(3), bytes: Number(info.format?.size ?? 0),
     video: `${v.codec_name} ${v.width}x${v.height} ${v.pix_fmt} ${v.color_range}/${v.color_space}`, audio: a ? a.codec_name : null,
-    lufs, loudness_corrected: corrected, problems, findings: layoutFindings(stage.logs, resolved, prepared.diags),
+    lufs, loudness_corrected: corrected,
+    // Sound against picture, in milliseconds (positive: the sound is late): as the renderer
+    // left it, and in the finished file.
+    sound_offset_ms: hasAudio ? {rendered: lag ? Math.round(lag.seconds * 1000) : null, exported: after ? Math.round(after.seconds * 1000) : null} : null,
+    problems, findings: layoutFindings(stage.logs, resolved, prepared.diags),
   };
   fs.writeFileSync(path.join(renders, 'kit_render.json'), JSON.stringify(result, null, 1));
   return result;
@@ -731,5 +812,5 @@ if (result.problems.length) {
   console.log(`EXPORT PROBLEMS: ${result.problems.join('; ')}`);
   process.exit(1);
 }
-console.log(`Exported ${result.file}: ${result.seconds} s, ${result.video}${result.audio ? `, ${result.audio}` : ', no sound'}${result.lufs !== null ? `, ${result.lufs.toFixed(1)} LUFS${result.loudness_corrected ? ' (corrected)' : ''}` : ''} (${((Date.now() - started) / 1000).toFixed(1)} s).`);
+console.log(`Exported ${result.file}: ${result.seconds} s, ${result.video}${result.audio ? `, ${result.audio}, ${soundPlacement(result.sound_offset_ms)}` : ', no sound'}${result.lufs !== null ? `, ${result.lufs.toFixed(1)} LUFS${result.loudness_corrected ? ' (corrected)' : ''}` : ''} (${((Date.now() - started) / 1000).toFixed(1)} s).`);
 process.exit(0);
