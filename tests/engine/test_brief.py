@@ -68,6 +68,23 @@ def build_revise_prompt_text() -> str:
                                budget_usd=1.2)
 
 
+def test_every_picture_of_the_presenter_is_made_from_the_portrait():
+    # Video 715 described its three cutaways in words alone, in the same batch as the portrait.
+    # The image model invented another person each time (long braids beside a presenter with
+    # short grey hair); the director bought all three again as "hands only" and shipped hands of
+    # another skin tone. Video 714 had edited its cutaways from the portrait: right first time.
+    brief = " ".join(_brief().split())
+    assert "One presenter, one source picture: generate the presenter's portrait first" in brief
+    assert "any part of them (their hands, an arm, a shoulder, their back, a view over their shoulder)" in brief
+    assert '`generation_mode: "edit"` and `image_path` set to the portrait' in brief
+    assert 'The same person as in the reference photo' in brief
+    assert "In the burst these pictures wait for the portrait, as the takes do" in brief
+    # The review names what to compare, hands included.
+    quality = " ".join(_brief().split("## Quality bar", 1)[1].split("\n## ", 1)[0].split())
+    assert "Hold every other shot that shows the presenter, or part of them, against the portrait" in quality
+    assert "the skin tone (hands included)" in quality and "does not ship" in quality
+
+
 def test_the_run_report_opens_with_a_summary_the_client_can_read():
     # A client app shows the run report as production notes after cutting every line that names
     # a tool, a model, a file or a cost. Video 714's report was written entirely in those, so

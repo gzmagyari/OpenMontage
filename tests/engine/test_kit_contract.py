@@ -143,6 +143,12 @@ def test_the_burst_is_bound_to_the_shopping_list_and_the_prepared_audio():
     flat = _flat(text)
     assert "then `kit voice`, then takes" in flat
     assert "PREPARED audio" in flat and "`trim_silence` off" in flat
+    # Every picture of the presenter is an edit of the portrait, and waits for it in the burst.
+    assert "### 1c. One Presenter, One Source Picture (Binding)" in text
+    assert '`generation_mode: "edit"` and `image_path` set to the portrait' in flat
+    assert "Never describe such a picture in words alone" in flat
+    assert "these pictures wait for the portrait, exactly as the takes do" in flat
+    assert "which is an edit of the portrait (1c), never a picture from words alone" in flat
 
 
 def test_edit_decisions_live_in_the_edit_and_the_kit_renders_it():

@@ -165,6 +165,14 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
     give the brand (the model otherwise invents one, or uses a real one). Real photos and
     screenshots downloaded from the client's own site are references, not generated images: use
     them as they are.
+    One presenter, one source picture: generate the presenter's portrait first, and make every
+    other picture that shows the presenter or any part of them (their hands, an arm, a shoulder,
+    their back, a view over their shoulder) FROM that portrait - the same tool with
+    `generation_mode: "edit"` and `image_path` set to the portrait, the prompt opening with "The
+    same person as in the reference photo" and then the new framing. Described in words alone,
+    such a picture comes back as somebody else (other hair, other skin tone, other clothes), and
+    re-making it and its clip costs both twice. In the burst these pictures wait for the portrait,
+    as the takes do.
 
 ## Plan first, then produce
 
@@ -189,6 +197,9 @@ the edit and the plan file and record the reason in the decision log and RUN_REP
   person's identity holds and the mouth moves during speech, and probe the audio level - a take
   whose audio peaks near zero is broken. Reshoot a bad take at most once; prefer a reshoot over
   keeping a bad take.
+- Hold every other shot that shows the presenter, or part of them, against the portrait: the
+  hair, the skin tone (hands included) and the clothes are the portrait's, or the shot is
+  somebody else's and does not ship.
 - No overlapping or duplicated on-screen text; music must never drown the voice.
 - Before the final render, make a sheet of the telling frames with `kit sheet`, LOOK at it, and
   fix what it shows in the edit or the look. `kit check` must pass with no errors; a warning is

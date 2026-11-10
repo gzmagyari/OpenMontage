@@ -48,6 +48,23 @@ Before batch-generating assets, produce one sample of each expensive type and sh
 
 If rejected, adjust parameters and retry (max 3 iterations). Do not batch until approved.
 
+### 1c. One Presenter, One Source Picture (Binding)
+
+The presenter's portrait is the first picture made, and every other picture that shows the
+presenter or any part of them - hands on a phone, an arm on the desk, a shoulder, their
+back, a view over their shoulder - is made FROM it: `openai_image` with
+`generation_mode: "edit"` and `image_path` set to the portrait, the prompt opening with
+"The same person as in the reference photo" and then the new framing. Never describe such
+a picture in words alone: the image model then invents another person. Video 715 bought
+three cutaways that way, got long braids and long brown hair next to a presenter with
+short grey hair, bought all three again as "hands only", and shipped hands of another
+skin tone than the presenter's. Video 714 edited its cutaways from the portrait and they
+were right the first time.
+
+Inside the burst these pictures wait for the portrait, exactly as the takes do; pictures
+that show no person (a product, a screen, a place) do not wait. At review, hold each one
+against the portrait: hair, skin tone (hands included) and clothes.
+
 ### 2. Resolve Narration Before Support Graphics
 
 Spokesperson videos depend on speech. Determine whether narration is:
@@ -151,7 +168,9 @@ call would hold the session until the last take lands. One process for the whole
 burst, chained inside - TTS first
 (concurrent, each line saved at `assets/audio/<line id>.mp3`), then `kit voice`, then
 takes / b-roll / music / image concurrently as their inputs land, each writing its
-result JSON and cost-log entries exactly as above. While it cooks, restyle the look
+result JSON and cost-log entries exactly as above. The presenter's portrait is among the
+first calls: the takes need it, and so does every still that shows the presenter or part
+of them, which is an edit of the portrait (1c), never a picture from words alone. While it cooks, restyle the look
 and settle the layout with `kit sheet --draft`: it shows a waiting frame for whatever
 is still generating, so never make a stand-in file yourself (one left at a real path
 would pass for the real thing). Collect the results at edit time.
