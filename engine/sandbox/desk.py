@@ -160,8 +160,12 @@ class ToolDesk:
         if result is None:
             return _failed(f"{name} did not finish (timed out or stopped). If the provider finished the "
                            "work it is still counted; do not repeat the call blindly.")
+        # The provider's request ids go into the ledger with the cost: settlement checks each
+        # estimate against what the provider really billed, and it can only do that by id.
+        data = result.get("data")
         job_ledger.finish_call(self.ledger_dir, call, cost_usd=result.get("cost_usd"),
-                               success=result.get("success"))
+                               success=result.get("success"),
+                               request_ids=data.get("request_ids") if isinstance(data, dict) else None)
         return result
 
     def _cwd(self, requested: str) -> str:

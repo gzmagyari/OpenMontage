@@ -223,6 +223,8 @@ class FalElevenLabsMusic(BaseTool):
                 "force_instrumental": payload["force_instrumental"],
                 "output": str(output_path),
                 "format": "mp3",
+                # For the job's ledger: settlement checks the estimate against fal's billing by id.
+                "request_ids": [str(queue_data["request_id"])] if queue_data.get("request_id") else [],
             },
             artifacts=[str(output_path)],
             cost_usd=self.estimate_cost(inputs),

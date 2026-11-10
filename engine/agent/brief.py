@@ -82,8 +82,10 @@ def build_brief(
         '8. No captions (the client disabled them): set `"captions": {"enabled": false}` in the edit.'
     )
     music_rule = (
-        "9. Background music is wanted: generate or reuse a bed, name it in the edit (`music.file`) "
-        "and build the soundtrack with `kit mix` (voice ducking and -14 LUFS are built in)."
+        "9. Background music is wanted: generate the bed with tool `fal_elevenlabs_music` (a music "
+        "tool the provider menu lists as unavailable has no key here and only fails), name it in the "
+        "edit (`music.file`) and build the soundtrack with `kit mix` (voice ducking and -14 LUFS are "
+        "built in)."
         if music else
         "9. No background music (the client disabled it): name none in the edit; `kit mix` still "
         "builds the voice track at -14 LUFS."

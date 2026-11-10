@@ -97,6 +97,9 @@ def test_the_brief_turns_client_options_into_edit_settings():
     assert '"captions": {"enabled": false}' in _brief(captions=False)
     assert "name none in the edit" in _brief(music=False)
     assert "`music.file`" in _brief()
+    # The music tool is named: video 713's batch first tried one that has no key here, and failed.
+    assert "generate the bed with tool `fal_elevenlabs_music`" in _brief()
+    assert "fal_elevenlabs_music" not in _brief(music=False)
 
 
 def test_a_revision_goes_through_the_kit_when_the_project_has_an_edit():

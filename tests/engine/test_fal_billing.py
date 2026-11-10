@@ -86,6 +86,29 @@ def test_reconcile_replaces_fully_matched_items_with_actuals():
     assert stats["drift_usd"] == round((1.536 - 0.51) + (0.336 - 0.1814), 4)
 
 
+def test_fal_charges_without_a_request_id_are_named_not_passed_over():
+    items = [
+        CostItem("take_A", 0.28, "fal.ai", ("p1",)),
+        CostItem("music", 0.60, "fal.ai", ()),            # a fal charge nobody can check
+        CostItem("portrait", 0.0413, "openai", ()),       # not fal's to bill
+        CostItem("mix", 0.0, "fal.ai", ()),               # nothing was charged
+    ]
+    assert [i.item for i in fal_billing.unchecked(items)] == ["music"]
+    assert fal_billing.unchecked([]) == []
+
+
+def test_the_voice_and_music_tools_hand_their_request_ids_to_the_ledger():
+    """Both returned their request id only inside the resume record, so their lines could never
+    be checked against fal's billing."""
+    import inspect
+
+    from tools.audio.fal_elevenlabs_music import FalElevenLabsMusic
+    from tools.audio.fal_elevenlabs_tts import FalElevenLabsTTS
+
+    for tool in (FalElevenLabsMusic, FalElevenLabsTTS):
+        assert '"request_ids"' in inspect.getsource(tool), tool.__name__
+
+
 def test_reconciled_items_flow_into_cost_lines_with_estimated_false():
     from engine.agent.runner import _set_generation_lines
 

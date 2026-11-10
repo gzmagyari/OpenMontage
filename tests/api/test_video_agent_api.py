@@ -49,6 +49,7 @@ class FakeSDK:
         self.hang = False
         self.hang_from_call = None
         self.export_from_call = 1
+        self.request_ids: dict[str, list[str]] = {}  # tool -> what its provider call returned
 
     def install(self, monkeypatch):
         fake = self
@@ -66,13 +67,15 @@ class FakeSDK:
                          ToolUseBlock(id="t1", name="Bash",
                                       input={"command": "python -c 'fal_elevenlabs_tts'"})],
                 model=options.model)
-            record_tool_call(options, "fal_elevenlabs_tts", 0.02, model="eleven-v3", output="/p/vo.mp3")
+            record_tool_call(options, "fal_elevenlabs_tts", 0.02, model="eleven-v3", output="/p/vo.mp3",
+                             request_ids=fake.request_ids.get("fal_elevenlabs_tts"))
             yield UserMessage(content=[ToolResultBlock(tool_use_id="t1", content="tts ok", is_error=False)])
             yield AssistantMessage(
                 content=[ToolUseBlock(id="t2", name="Bash",
                                       input={"command": "python -c 'fal_avatar h3max-acting'"})],
                 model=options.model)
-            record_tool_call(options, "fal_avatar", 0.88, model="h3max-acting", output="/p/take1.mp4")
+            record_tool_call(options, "fal_avatar", 0.88, model="h3max-acting", output="/p/take1.mp4",
+                             request_ids=fake.request_ids.get("fal_avatar"))
             yield UserMessage(content=[ToolResultBlock(tool_use_id="t2", content="take ok", is_error=False)])
             if fake.delay:
                 await asyncio.sleep(fake.delay)
@@ -195,6 +198,62 @@ async def test_video_job_end_to_end(agent_client, fake_sdk):
     assert session_home.is_dir() and session_home.parent.name == job_id
 
 
+async def test_settlement_bills_what_fal_billed_and_names_the_charges_it_could_not_check(
+        agent_client, fake_sdk, monkeypatch):
+    """Video 713 settled with every line an estimate and not a word about it: the billing key
+    was set, but no request id had reached the ledger, so the check was skipped in silence."""
+    from lib import fal_billing
+
+    asked: list[list[str]] = []
+
+    def billed(request_ids, since_iso, key, timeout=20.0):
+        asked.append(list(request_ids))
+        assert key == "the-billing-key"
+        return {"rid-take": 0.93}
+
+    monkeypatch.setenv(fal_billing.ADMIN_KEY_ENV, "the-billing-key")
+    monkeypatch.setattr(fal_billing, "fetch_events", billed)
+    fake_sdk.request_ids = {"fal_avatar": ["rid-take"]}  # the voice line brings none
+
+    response = await agent_client.post("/v1/videos", json={
+        "prompt": "A 15s TikTok ad for example.com with a presenter",
+        "options": {"duration_seconds": 15, "max_budget_usd": 5},
+    })
+    assert response.status_code == 202, response.text
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["status"] == "completed", data.get("error")
+
+    # Only our own request ids are asked about, and the take is billed at fal's figure.
+    assert asked == [["rid-take"]]
+    lines = {line["item"]: (line["usd"], line["estimated"]) for line in data["cost"]["lines"]}
+    assert lines["fal_avatar h3max-acting (take1.mp4)"] == (0.93, False)
+    assert lines["fal_elevenlabs_tts eleven-v3 (vo.mp3)"] == (0.02, True)
+    assert data["cost"]["spent_usd"] == pytest.approx(0.21 + 0.93 + 0.02)
+    # The charge nobody could check is named, once.
+    unchecked = [warning for warning in data["warnings"] if "without a request id" in warning]
+    assert len(unchecked) == 1
+    assert "1 (fal_elevenlabs_tts eleven-v3 (vo.mp3))" in unchecked[0]
+
+
+async def test_a_job_with_no_request_ids_at_all_still_says_so(agent_client, fake_sdk, monkeypatch):
+    from lib import fal_billing
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("there is nothing to ask fal about")
+
+    monkeypatch.setenv(fal_billing.ADMIN_KEY_ENV, "the-billing-key")
+    monkeypatch.setattr(fal_billing, "fetch_events", never)
+
+    response = await agent_client.post("/v1/videos", json={
+        "prompt": "A 15s TikTok ad for example.com with a presenter",
+        "options": {"duration_seconds": 15, "max_budget_usd": 5},
+    })
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["status"] == "completed", data.get("error")
+    assert [warning for warning in data["warnings"] if "without a request id: 2" in warning]
+    assert all(line["estimated"] for line in data["cost"]["lines"] if line["provider"] == "fal.ai")
+
+
 def test_stage_tracker_follows_the_tools_that_ran_and_never_regresses():
     from engine.agent.runner import StageTracker
 
@@ -205,8 +264,25 @@ def test_stage_tracker_follows_the_tools_that_ran_and_never_regresses():
     # Revisiting an earlier stage's tool does not move the label backwards.
     assert tracker.update("tts_selector") is None
     assert tracker.update("transcriber") == ("captions", 55)
-    assert tracker.update("fal_elevenlabs_music") == ("audio mix", 65)
+    # Buying the music is not mixing it: only the mixer marks the audio mix.
+    assert tracker.update("fal_elevenlabs_music") is None
+    assert tracker.update("audio_mixer") == ("audio mix", 65)
     assert tracker.update("video_compose") == ("render", 80)
+
+
+def test_a_batch_that_buys_everything_at_once_does_not_skip_the_bar_ahead():
+    """Video 713 (job_ca3eb840021d935a): the paid batch started the voice lines, the stills, the
+    clips and the music in the same second, and the bar went from 10% to "audio mix, 65%" before
+    a single take existed. This is that job's ledger, in order."""
+    from engine.agent.runner import StageTracker
+
+    started = ["openai_image", "fal_elevenlabs_tts", "fal_elevenlabs_tts", "h3_max_video", "h3_max_video",
+               "fal_elevenlabs_tts", "fal_elevenlabs_tts", "music_gen", "transcriber", "transcriber",
+               "fal_avatar", "fal_avatar", "fal_elevenlabs_tts", "fal_elevenlabs_music", "transcriber",
+               "audio_mixer"]
+    tracker = StageTracker()
+    seen = [stage for stage in (tracker.update(tool) for tool in started) if stage]
+    assert seen == [("voiceover", 20), ("talking shots", 40), ("captions", 55), ("audio mix", 65)]
 
 
 def test_only_a_real_remotion_run_counts_as_a_direct_render():

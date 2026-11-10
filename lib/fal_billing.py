@@ -48,6 +48,14 @@ def fetch_events(request_ids: Iterable[str], since_iso: str, key: str,
     return out
 
 
+def unchecked(items: list[CostItem]) -> list[CostItem]:
+    """Fal charges that reached the ledger without a request id: nothing can be compared for
+    them, so they stay estimates. Settlement names them instead of passing over them in silence
+    (video 713 settled with every line an estimate because the desk dropped the ids)."""
+    return [item for item in items
+            if str(item.provider or "").lower().startswith("fal") and item.usd > 0 and not item.request_ids]
+
+
 def reconcile(items: list[CostItem], events: dict[str, float]) -> tuple[list[CostItem], dict[str, Any]]:
     """Replace each item's estimate with the summed billed cost of its request ids.
     Only items whose EVERY id has a billing event flip to actual; anything else stays

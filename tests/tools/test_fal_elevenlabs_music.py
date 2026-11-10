@@ -46,6 +46,7 @@ def test_execute_submits_once_and_downloads_audio(tmp_path, monkeypatch):
         json_data={
             "status_url": "https://queue.example/status",
             "response_url": "https://queue.example/result",
+            "request_id": "01a1c4a1-music",
         }
     )
     status_response = _response(json_data={"status": "COMPLETED"})
@@ -73,6 +74,9 @@ def test_execute_submits_once_and_downloads_audio(tmp_path, monkeypatch):
     assert result.success is True
     assert result.cost_usd == 0.60
     assert result.model == "fal-ai/elevenlabs/music"
+    # The request id goes out with the result: the job's ledger keeps it, and settlement checks
+    # the estimate against what fal billed for exactly this request.
+    assert result.data["request_ids"] == ["01a1c4a1-music"]
     assert output_path.read_bytes() == b"fake-mp3"
     assert mock_post.call_count == 1
     assert mock_post.call_args.kwargs["json"]["music_length_ms"] == 20000

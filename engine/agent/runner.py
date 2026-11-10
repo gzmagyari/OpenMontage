@@ -82,11 +82,14 @@ def _llm_budget_death(exc: BaseException) -> bool:
 # it can't move the stage. The stage only advances - the agent legitimately revisits
 # earlier tools (a caption re-check during render), but a polling client should see
 # monotonic stages.
+# "audio mix" is the mixer and nothing else. A job buys its music in the same batch as its
+# voice lines, at the very start of production: counting the music tool as the mix sent the
+# progress bar from 10% to 65% in one step, before a single take existed (video 713).
 _TOOL_STAGES: list[tuple[re.Pattern[str], str, int]] = [
     (re.compile(r"tts", re.I), "voiceover", 20),
     (re.compile(r"avatar|talking_head", re.I), "talking shots", 40),
     (re.compile(r"transcriber|whisper", re.I), "captions", 55),
-    (re.compile(r"audio_mixer|music|freesound", re.I), "audio mix", 65),
+    (re.compile(r"audio_mixer", re.I), "audio mix", 65),
     (re.compile(r"video_compose|remotion|hyperframes", re.I), "render", 80),
 ]
 # The one production step the agent runs outside the tools: the final render, through the video
@@ -606,6 +609,14 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     # Best-effort: any failure keeps the estimates and says so, never fails the job.
     fal_key = fal_billing.admin_key()
     reconcilable = [item for item in ledger.items if item.request_ids]
+    # A fal charge that reached the ledger without its request id cannot be checked. Where the
+    # billing key is set, say so: video 713 settled with every line an estimate and no word
+    # about it, because the desk dropped the ids on the way to the ledger.
+    blind = fal_billing.unchecked(ledger.items) if fal_key else []
+    if blind:
+        named = ", ".join(item.item for item in blind[:4]) + (" and more" if len(blind) > 4 else "")
+        ctx.warn(f"fal charges without a request id: {len(blind)} ({named}). They could not be "
+                 "checked against fal's billing and are billed at their estimates")
     if fal_key and reconcilable:
         try:
             ids = [rid for item in reconcilable for rid in item.request_ids]

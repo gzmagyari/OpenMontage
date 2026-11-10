@@ -402,6 +402,8 @@ class FalElevenLabsTTS(BaseTool):
             "format": output_format,
             "resume_job": job,
             "cost_status": "unquoted" if job["estimated_cost"] is None else "estimated",
+            # For the job's ledger: settlement checks the estimate against fal's billing by id.
+            "request_ids": [job["request_id"]] if job.get("request_id") else [],
         }
         if job["timestamps"] and "timestamps" in result_data:
             data["timestamps"] = result_data["timestamps"]

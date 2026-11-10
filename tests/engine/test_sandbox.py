@@ -144,6 +144,20 @@ def test_the_desk_runs_a_paid_call_and_records_what_it_cost(desk, tmp_path):
     assert state.spent_usd == 0.4 and state.tools_started == ["fake_paid"]
 
 
+def test_the_desk_keeps_the_providers_request_ids_with_the_cost(desk, tmp_path):
+    """Settlement checks each estimate against what the provider really billed, by request id.
+    The desk used to drop the ids, so in a real job that check never ran (video 713: every
+    line an estimate and no word about it)."""
+    desk.answer = {"success": True, "cost_usd": 0.448, "data": {"request_ids": ["01a1c4a1-0b43", ""], "output": "t.mp4"}}
+    asyncio.run(desk._run({"tool": "fake_paid", "inputs": {"output_path": "t.mp4"}}))
+    item = job_ledger.summarize(job_ledger.read_entries(tmp_path)).items[0]
+    assert (item.usd, item.request_ids) == (0.448, ("01a1c4a1-0b43",))
+    # A result without ids, or with no data at all, is still recorded, just not checkable.
+    desk.answer = {"success": True, "cost_usd": 0.1, "data": None}
+    asyncio.run(desk._run({"tool": "fake_paid", "inputs": {"output_path": "u.mp4"}}))
+    assert job_ledger.summarize(job_ledger.read_entries(tmp_path)).items[1].request_ids == ()
+
+
 def test_the_desk_holds_a_call_to_the_budget(desk, tmp_path):
     job_ledger.write_budget(tmp_path, 0.3)
     answer = asyncio.run(desk._run({"tool": "fake_paid", "inputs": {}}))
