@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {chromeTempDir, MEMORY_DIR, ROOM_BYTES, TMPFS_MAGIC, withTempDir} from '../engine/browserTemp.ts';
 import {groupWords, takePhrases} from '../engine/captions.ts';
 import {contrastRatio} from '../engine/color.ts';
 import {lintResolved} from '../engine/lint.ts';
@@ -286,4 +287,45 @@ test('zones keep the proportions of a tall video on any canvas', () => {
   assert.deepEqual(tall.upper, {x: 90, y: 120, w: 900, h: 580});
   const square = zonesFor(1080, 1080, 'none');
   assert.ok(square.lower.y + square.lower.h <= 1080 && square.upper.y >= 0);
+});
+
+test("Chrome gets a temp folder in memory only where that is safe", () => {
+  const made: string[] = [];
+  const probe = (over: Record<string, unknown> = {}) => ({
+    platform: 'linux',
+    env: {} as Record<string, string | undefined>,
+    statfs: () => ({type: TMPFS_MAGIC, bavail: ROOM_BYTES / 4096, bsize: 4096}),
+    mkdtemp: (prefix: string) => (made.push(prefix), `${prefix}Ab12Cd`),
+    ...over,
+  });
+  // A memory filesystem with room: a folder of Chrome's own inside it.
+  assert.equal(chromeTempDir(probe()), `${MEMORY_DIR}/kit-chrome-Ab12Cd`);
+  assert.deepEqual(made, [`${MEMORY_DIR}/kit-chrome-`]);
+  // The same answer when the numbers arrive as bigints.
+  assert.equal(chromeTempDir(probe({statfs: () => ({type: BigInt(TMPFS_MAGIC), bavail: BigInt(ROOM_BYTES / 4096), bsize: 4096n})})), `${MEMORY_DIR}/kit-chrome-Ab12Cd`);
+  // Everything else leaves Chrome where it is, and makes no folder.
+  made.length = 0;
+  assert.equal(chromeTempDir(probe({platform: 'win32'})), null);
+  assert.equal(chromeTempDir(probe({platform: 'darwin'})), null);
+  assert.equal(chromeTempDir(probe({env: {KIT_CHROME_TEMP: 'disk'}})), null);                              // switched off
+  assert.equal(chromeTempDir(probe({statfs: () => ({type: 0xef53, bavail: 1e9, bsize: 4096})})), null);    // a disk mounted there
+  assert.equal(chromeTempDir(probe({statfs: () => ({type: TMPFS_MAGIC, bavail: 16384, bsize: 4096})})), null);  // Docker's 64 MB
+  assert.equal(chromeTempDir(probe({statfs: () => { throw new Error('ENOENT'); }})), null);                // no /dev/shm
+  assert.deepEqual(made, []);
+  assert.equal(chromeTempDir(probe({mkdtemp: () => { throw new Error('EACCES'); }})), null);               // not writable
+  // Any other value of the switch is not "disk".
+  assert.equal(chromeTempDir(probe({env: {KIT_CHROME_TEMP: 'memory'}})), `${MEMORY_DIR}/kit-chrome-Ab12Cd`);
+});
+
+test("only what is started inside inherits Chrome's temp folder", async () => {
+  const env: Record<string, string | undefined> = {TMPDIR: '/tmp', OTHER: 'kept'};
+  const seen = await withTempDir(env, '/dev/shm/kit-chrome-x', async () => env.TMPDIR);
+  assert.equal(seen, '/dev/shm/kit-chrome-x');
+  assert.deepEqual(env, {TMPDIR: '/tmp', OTHER: 'kept'});
+  // Put back after a failure too, and removed again where there was none.
+  const bare: Record<string, string | undefined> = {};
+  await assert.rejects(withTempDir(bare, '/dev/shm/kit-chrome-y', async () => { throw new Error('no browser'); }), /no browser/);
+  assert.equal('TMPDIR' in bare, false);
+  // No folder: the environment is not touched at all.
+  assert.equal(await withTempDir(env, null, async () => env.TMPDIR), '/tmp');
 });

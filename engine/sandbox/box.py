@@ -153,6 +153,10 @@ class AgentBox:
         }
         if Path("/opt/hf").is_dir():
             env.update(HF_HOME="/opt/hf", HF_HUB_OFFLINE="1")
+        # An operator's switch for the kit's renders: "disk" keeps Chrome's temporary files out
+        # of memory (remotion-composer/kit/engine/browserTemp.ts). Nothing else is passed on.
+        if os.environ.get("KIT_CHROME_TEMP") == "disk":
+            env["KIT_CHROME_TEMP"] = "disk"
         # Tools check that their provider is configured; the desk holds the real values.
         for name in secret_names(os.environ):
             env[name] = "held-by-the-desk"

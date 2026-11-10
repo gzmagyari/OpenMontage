@@ -218,6 +218,16 @@ It reaches the outside through three sockets the API serves for that job only:
 `OPENMONTAGE_AGENT_SANDBOX=required` is the image's setting; `off` runs the agent unboxed and is for
 development hosts and the test suite only.
 
+A video kit render keeps Chrome's temporary files in the box's own memory filesystem (`/dev/shm`),
+not in the job folder on disk. Remotion starts Chrome so that its shared memory, the frames it hands
+between its own processes, lives in files under its temp folder; on disk that is 7 to 8 GB of writes
+for a 30 second video, and a slow disk then sets the pace of the render (the same project: 115 to
+139 s on disk, 29 to 31 s in memory, frame for frame the same picture). In memory it is about 1 GB
+for each render in progress. The kit uses `/dev/shm` only when it is a memory filesystem with at
+least 2 GB free and writes which it was into `renders/kit_render.json` (`chrome_temp`); the rule is
+in `remotion-composer/kit/engine/browserTemp.ts`. `KIT_CHROME_TEMP=disk` on the container switches
+this off for every job.
+
 ## Design notes
 
 - `engine/jobs/` - disk-backed job store (atomic writes), FIFO resource limiters that queue

@@ -81,6 +81,24 @@ def test_a_box_holds_placeholders_never_credentials(tmp_path, monkeypatch):
     assert json.loads(box.settings_json) == {"skipWebFetchPreflight": True}
 
 
+def test_the_operators_render_switch_reaches_the_box_and_nothing_else_of_its_kind(tmp_path, monkeypatch):
+    """KIT_CHROME_TEMP=disk on the container keeps Chrome's temporary files on disk during the
+    kit's renders. The box's environment is built from a fixed list, so the switch has to be
+    handed in; only its one meaningful value is."""
+    def box_env():
+        return AgentBox(agent_dir=tmp_path / "agent", project_dir=tmp_path / "projects" / "job_1",
+                        model="claude-haiku-5-5", claude_cap_usd=1.0, cli_switches={}, api_key="k")._box_env()
+
+    monkeypatch.delenv("KIT_CHROME_TEMP", raising=False)
+    assert "KIT_CHROME_TEMP" not in box_env()
+    monkeypatch.setenv("KIT_CHROME_TEMP", "disk")
+    assert box_env()["KIT_CHROME_TEMP"] == "disk"
+    monkeypatch.setenv("KIT_CHROME_TEMP", "/somewhere/else")
+    assert "KIT_CHROME_TEMP" not in box_env()
+    # The box's own temp folder is unchanged either way: it is shared with the desk.
+    assert box_env()["TMPDIR"] == "/tmp"
+
+
 def test_a_provider_box_gets_provider_settings_but_nothing_that_drives_the_server():
     env = provider_env({"FAL_KEY": "x", "MINIMAX_REGION": "global", "OPENMONTAGE_API_TOKEN": "t",
                         "CLAUDE_CONFIG_DIR": "c", "OPENMONTAGE_TOOL_DESK": "d", "OPENMONTAGE_JOB_LEDGER_DIR": "l"})

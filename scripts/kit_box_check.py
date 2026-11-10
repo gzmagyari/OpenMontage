@@ -128,6 +128,12 @@ async def run() -> int:
                  "-of", "json", str(export)], capture_output=True, text=True).stdout or "{}")
         video = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), {})
         public = project / "work" / "kit" / "public" / "assets" / "video" / "clip.mp4"
+        # Where Chrome kept its temporary files during the render: in the box's own memory
+        # filesystem, unless the operator switched that off (KIT_CHROME_TEMP=disk). On the job's
+        # disk a render can run several times longer (remotion-composer/kit/engine/browserTemp.ts).
+        record_path = project / "renders" / "kit_render.json"
+        record = json.loads(record_path.read_text(encoding="utf-8")) if record_path.is_file() else {}
+        want_temp = "disk" if os.environ.get("KIT_CHROME_TEMP") == "disk" else "memory"
         checks = [
             ("the runner's staging gave the box a workspace", "composition/edit.json" in staged and "composition/src/look" in staged),
             *[(f"`{name}` works in the box", name in ran and ran[name]["code"] == 0) for name, _ in STEPS],
@@ -137,6 +143,8 @@ async def run() -> int:
             ("the export is H.264, the edit's size, BT.709",
              (video.get("codec_name"), video.get("width"), video.get("height"), video.get("color_space")) == ("h264", 540, 960, "bt709")),
             ("the export has sound", any(s.get("codec_type") == "audio" for s in probe.get("streams", []))),
+            (f"the render kept Chrome's temporary files in {'memory' if want_temp == 'memory' else 'the job folder, as switched'}"
+             f" (it says: {record.get('chrome_temp')})", record.get("chrome_temp") == want_temp),
         ]
         for label, ok in checks:
             print(f"{'PASS' if ok else 'FAIL'}  {label}")

@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
+import {chromeTempDir, withTempDir} from '../engine/browserTemp.ts';
 import {lintResolved} from '../engine/lint.ts';
 import {estimateVoice, resolveEdit} from '../engine/resolve.ts';
 import {validateEdit} from '../engine/schema.ts';
@@ -43,6 +44,10 @@ const draft = flag('draft');
 
 const started = Date.now();
 const lap = (label, since) => console.log(`  ${label}: ${((Date.now() - since) / 1000).toFixed(1)} s`);
+// Chrome's own temp folder while a browser is open, when it is in memory, and which kind the
+// last browser got ('memory' or 'disk'): see openStage.
+let browserTemp = null;
+let browserTempKind = 'disk';
 const fail = (message) => {
   console.error(`kit: ${message}`);
   process.exit(2);
@@ -467,7 +472,16 @@ async function openStage(resolved, edit) {
   };
   // Remotion looks for its browser under node_modules of the working directory.
   process.chdir(comp);
-  const browser = await openBrowser('chrome');
+  // Chrome takes its temp folder from the environment it is started with (engine/browserTemp.ts).
+  browserTemp = chromeTempDir({platform: process.platform, env: process.env, statfs: (dir) => fs.statfsSync(dir), mkdtemp: (prefix) => fs.mkdtempSync(prefix)});
+  browserTempKind = browserTemp ? 'memory' : 'disk';
+  let browser;
+  try {
+    browser = await withTempDir(process.env, browserTemp, () => openBrowser('chrome'));
+  } catch (err) {
+    dropBrowserTemp();
+    throw err;
+  }
   const inputProps = {resolved};
   let composition;
   try {
@@ -500,6 +514,17 @@ async function closeBrowser(browser) {
   try {
     await browser.close({silent: true});
   } catch {}
+  dropBrowserTemp();
+}
+
+/** Chrome's own temp folder goes with the browser (it is memory while it stays). */
+function dropBrowserTemp() {
+  if (!browserTemp) return;
+  try {
+    // Chrome may still be putting its profile away for a moment after it was told to close.
+    fs.rmSync(browserTemp, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
+  } catch {}
+  browserTemp = null;
 }
 
 function pickFrames(resolved) {
@@ -748,6 +773,9 @@ async function render(prepared) {
     // Sound against picture, in milliseconds (positive: the sound is late): as the renderer
     // left it, and in the finished file.
     sound_offset_ms: hasAudio ? {rendered: lag ? Math.round(lag.seconds * 1000) : null, exported: after ? Math.round(after.seconds * 1000) : null} : null,
+    // Where Chrome kept its temporary files: 'memory', or 'disk' when it could not (a render
+    // on disk can run several times longer, see engine/browserTemp.ts).
+    chrome_temp: browserTempKind,
     problems, findings: layoutFindings(stage.logs, resolved, prepared.diags),
   };
   fs.writeFileSync(path.join(renders, 'kit_render.json'), JSON.stringify(result, null, 1));

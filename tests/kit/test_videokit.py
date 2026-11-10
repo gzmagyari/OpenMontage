@@ -407,7 +407,13 @@ def test_the_exports_sound_starts_with_its_picture(tmp_path: Path):
     assert rendered.returncode == 0, rendered.stdout + rendered.stderr
     assert ", aac, sound on the picture, " in rendered.stdout, rendered.stdout
 
-    record = json.loads((project / "renders" / "kit_render.json").read_text(encoding="utf-8"))["sound_offset_ms"]
+    whole = json.loads((project / "renders" / "kit_render.json").read_text(encoding="utf-8"))
+    # Where Chrome kept its temporary files: memory wherever this host has a memory filesystem
+    # with room, and Chrome's own folder there is gone once the render is over.
+    assert whole["chrome_temp"] in ("memory", "disk")
+    if Path("/dev/shm").is_dir():
+        assert not list(Path("/dev/shm").glob("kit-chrome-*")), "Chrome's own temp folder goes with the browser"
+    record = whole["sound_offset_ms"]
     assert record["rendered"] is not None, "the lag of the renderer's own output was measured"
     assert record["exported"] is not None and abs(record["exported"]) <= 3, record
 
