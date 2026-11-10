@@ -70,11 +70,12 @@ def test_the_rehearsal_is_the_real_brief_plus_where_to_stop(tmp_path: Path):
     tail = " ".join(prompt[len(brief.rstrip()):].split())
     for phrase in ("exactly the video you would make with the budget above", "every paid tool call is refused",
                    "everything you would do before the first paid call", "while that batch is generating",
-                   "placeholders", "no final render", "REHEARSAL DONE"):
+                   "none of its files has arrived yet", "no final render", "REHEARSAL DONE"):
         assert phrase in tail, phrase
     # It says where the run stops and never how to work: the brief, the guide and the skills
-    # must carry that alone, or the rehearsal would test this paragraph instead of them.
-    for hint in ("edit", "kit", "sheet", "scene", "look", "check --draft"):
+    # must carry that alone, or the rehearsal would test this paragraph instead of them. Its
+    # first wording asked for "placeholders", and two directors made stand-in clips by hand.
+    for hint in ("edit", "kit", "sheet", "scene", "look", "check --draft", "placeholder", "stand-in"):
         assert hint not in tail.lower(), hint
 
 
@@ -226,6 +227,26 @@ def test_the_session_is_read_from_the_journal_and_the_transcript(tmp_path: Path)
                                "cache_read": 900000, "web_searches": 1}
     assert facts["cost_by_model"] == {"claude-sonnet-5-5": 0.6123, "claude-haiku-5-5": 0.01}
     assert facts["said_done"] and facts["journal_seconds"] == 285
+
+
+def test_words_written_into_a_file_are_not_commands_that_ran(tmp_path: Path):
+    """The first rehearsal counted `kit mix` and `kit render` as run because a director's plan,
+    written with a here-document, mentioned them."""
+    plan = ("cd /p && cat > artifacts/video_plan.md <<'EOF'\n# Plan\nThen `kit mix`, `kit check`, `kit render`.\nEOF\n"
+            "kit check --draft 2>&1 | tail -3")
+    assert probe.typed(plan) == "cd /p && cat > artifacts/video_plan.md <<'EOF'\nkit check --draft 2>&1 | tail -3"
+    # What shares the here-document's opening line is a command and stays.
+    assert probe.typed("python - <<E && kit sheet --draft\nprint('kit render')\nE") == "python - <<E && kit sheet --draft"
+    assert probe.typed("kit check --draft") == "kit check --draft"
+
+    agent, project = tmp_path / "agent", tmp_path / "projects" / "job_x"
+    journal = [{"at": "2026-11-10T07:00:00+00:00", "kind": "session", "session_id": "s"},
+               {"at": "2026-11-10T07:01:00+00:00", "kind": "tool", "name": "Bash", "id": "t1", "input": ""},
+               {"at": "2026-11-10T07:01:02+00:00", "kind": "tool_result", "tool_use_id": "t1", "is_error": False, "text": "OK: 30 s, 4 shots"}]
+    _journal(agent, journal)
+    (agent / "transcript.jsonl").write_text(json.dumps(
+        {"type": "AssistantMessage", "content": [{"id": "t1", "name": "Bash", "input": {"command": plan}}]}) + "\n", encoding="utf-8")
+    assert [run["ran"] for run in probe.session_facts(agent, project)["kit_runs"]] == [["check --draft"]]
 
 
 def test_a_session_that_never_ran_reads_as_empty(tmp_path: Path):

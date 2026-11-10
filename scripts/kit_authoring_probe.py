@@ -103,6 +103,9 @@ DEFAULT_PROBES = (
 
 # Where the run stops, and nothing about how to work: the brief, the guide and the stage skills
 # must carry that on their own, or the rehearsal would be testing this paragraph instead.
+# (Its first wording asked for "placeholders standing in for the files that do not exist yet",
+# and two of four directors duly made stand-in clips by hand at the real paths. A real run has
+# no such instruction, so neither has this.)
 REHEARSAL = """
 ## This run is a rehearsal
 
@@ -110,8 +113,8 @@ It goes as far as a real run can go without buying anything, and stops there. Pl
 exactly the video you would make with the budget above. No paid generation exists in this run
 (every paid tool call is refused), so do not attempt one. Do everything you would do before the
 first paid call. Then, instead of launching the paid batch, carry on with all the work you would
-do while that batch is generating, with placeholders standing in for the files that do not exist
-yet, and check that work the way you would check it in a real run. Stop there: no voice, no
+do while that batch is generating, exactly as if it had just been started and none of its files
+has arrived yet, and verify that work the way you would in a real run. Stop there: no voice, no
 takes, no images, no music, no final render, no exports and no RUN_REPORT.md. End with the
 single line REHEARSAL DONE.
 """
@@ -163,8 +166,16 @@ _ENGINE_MARKERS = {
 _REMOTION_BY_HAND = re.compile(r"\bremotion\s+(render|still|bundle|studio|compositions)\b|\brender(Media|Still)\s*\(")
 _KIT_COMMAND = re.compile(r"(?:^|[\s;&|(`])(?:kit|python3?\s+-m\s+lib\.videokit)\s+"
                           r"(init|look|voice|check|sheet|mix|render|resolve|help)\b([^\n;&|`]*)")
+# A here-document: its opening line stays (it can hold real commands), its body goes.
+_HEREDOC = re.compile(r"(<<-?[ \t]*(['\"]?)(\w+)\2)([^\n]*)\n.*?\n[ \t]*\3[ \t]*(?=\n|$)", re.S)
 _CODE = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 _CODE_OR_DATA = (*_CODE, ".json", ".css", ".html", ".srt", ".vtt", ".txt", ".md", ".py", ".sh")
+
+
+def typed(command: str) -> str:
+    """A shell command without the bodies of its here-documents. Text written into a file (a plan
+    that says "then `kit render`") is not a command that ran."""
+    return _HEREDOC.sub(lambda m: m.group(1) + m.group(4), command)
 
 
 def _sha(path: Path) -> str:
@@ -350,7 +361,7 @@ def session_facts(agent_dir: Path, project_dir: Path) -> dict[str, Any]:
         # A shell command can write the edit too (a heredoc, a python one-liner).
         if first["edit_written_s"] is None and re.search(r">\s*\S*composition/edit\.json|edit\.json['\"]?\s*,\s*['\"]w", command):
             first["edit_written_s"] = at
-        ran = [f"{m.group(1)}{' --draft' if '--draft' in m.group(2) else ''}" for m in _KIT_COMMAND.finditer(command)]
+        ran = [f"{m.group(1)}{' --draft' if '--draft' in m.group(2) else ''}" for m in _KIT_COMMAND.finditer(typed(command))]
         if not ran:
             continue
         outcome = results.get(str(entry.get("id")), {})
