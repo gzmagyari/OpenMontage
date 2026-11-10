@@ -55,7 +55,8 @@ Configuration is env-driven (see `.env.example`): `FAL_KEY`, `ANTHROPIC_API_KEY`
 Job lifecycle: `[draft ->] queued -> running -> completed | failed | cancelled`, with `stage`, `stage_detail`,
 `progress`, a cost ledger (`cost.lines`, `cost.spent_usd`) and a structured `error`
 (`code`, `message`, `retryable`). The cost ledger is LIVE: while the job runs it carries the
-Claude-loop estimate (metered from per-message token usage, replaced by the exact SDK figure at
+Claude-loop estimate (the higher of the session's own per-message token usage and the box
+gateway's meter; it only moves up while the job runs, and the exact SDK figure replaces it at
 the end) plus what every paid tool call recorded in the job's tool ledger (a call still running
 counts at its estimate, replaced by its real cost when it finishes; a successful call that reports
 no cost counts at its quote) - so a poll shows real spend as it happens, and a failed, cancelled or
@@ -130,7 +131,11 @@ while True:
 ```
 
 **3. Download** - `job["result"]["video"]["name"]` is the deliverable; `GET /v1/jobs/{id}/files`
-lists it alongside `RUN_REPORT.md` (the agent's own production report) and the transcripts:
+lists it alongside `RUN_REPORT.md` (the agent's own production report) and the transcripts. The
+report opens with a `## Summary` section written for your customer: a few plain sentences about
+the video, with no file, tool, model or provider name and no cost. Everything after it is for
+you, the operator (every paid call with its cost, timings, problems), so show a customer the
+summary, not the whole file:
 
 ```bash
 NAME=$(curl -s -H "Authorization: Bearer $TOKEN" "$API/v1/jobs/$JOB_ID?transcript_limit=0" \

@@ -39,8 +39,15 @@ If the avatar path has limitations such as visible lip-sync risk, retain that no
 
 ## Headless Jobs: Report Requirements (Binding)
 
-RUN_REPORT.md is not complete without the kit record (the look's starter and how it was
-restyled, custom scenes, sheets and renders), the delegation record when a subagent was
+RUN_REPORT.md opens with `## Summary`, the client's section: four to eight lines, one
+sentence each, about the video in the plain words of the progress notes. No file, tool,
+model or provider name, no command and no cost goes in it; a line that carries one is cut
+before the client reads the notes, and a summary made only of such lines leaves the client
+with no notes at all.
+
+The rest of the report is the operator's. It is not complete without the kit record (the
+look's starter and how it was restyled, custom scenes, sheets and renders), the delegation
+record when a subagent was
 used - which subagent produced which artifacts - and the shopping-list reconciliation
 (every paid item on the list bought or accounted for; every bought item on the list
 or justified in the plan file). Internal cost figures stay internal: customer-facing

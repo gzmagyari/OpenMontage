@@ -68,6 +68,24 @@ def build_revise_prompt_text() -> str:
                                budget_usd=1.2)
 
 
+def test_the_run_report_opens_with_a_summary_the_client_can_read():
+    # A client app shows the run report as production notes after cutting every line that names
+    # a tool, a model, a file or a cost. Video 714's report was written entirely in those, so
+    # its client got no notes at all. The report now opens with a section written for them.
+    brief = " ".join(_brief().split())
+    assert "It opens with a section headed `## Summary`, and that section is the client's" in brief
+    assert "one sentence each" in brief and "the plain words of your progress notes" in brief
+    assert "No file or folder name, no tool, model or provider name, no command and no cost" in brief
+    assert "Everything after it is for the operator" in brief
+    assert "every paid call with its cost" in brief  # the operator's part is unchanged
+    # The heading is quoted inside a sentence, never a heading of the brief itself.
+    assert "\n## Summary" not in _brief()
+    revise = " ".join(build_revise_prompt_text().split())
+    assert 'add a "Revision" section' in revise
+    assert "bring the `## Summary` section it opens with up to date" in revise
+    assert "write one if the report has none" in revise
+
+
 def test_the_brief_treats_the_budget_as_production_fuel():
     # The same run spent $0.99 of its $6.00 cap on static coverage.
     brief = _brief().replace("\n  ", " ")

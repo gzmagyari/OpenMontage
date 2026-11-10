@@ -40,7 +40,28 @@ def test_native_takes_price_at_the_plate_rate_alone():
     assert enum["default"] == "h3max" and "h3max" in enum["enum"] and "h3max-acting" in enum["enum"]
 
 
-def test_h3_video_applies_the_768p_multiplier_and_rounds_up():
+def test_a_take_is_priced_by_the_plate_length_fal_is_asked_for():
+    """Video 714, billing events: a 5.54 s line was priced at 6 seconds ($0.336) and billed 7
+    ($0.392), because the plate is asked for the line plus 0.6 s of headroom, in whole seconds.
+    The other two takes of that video, and video 713's, were billed what this gives."""
+    from tools.avatar.fal_avatar import FalAvatar
+
+    tool = FalAvatar()
+    base = {"image_url": "http://x/p.png", "audio_url": "http://x/a.mp3"}
+    for line, seconds, billed in [(5.542, 7, 0.392), (4.042, 5, 0.28), (5.042, 6, 0.336), (7.24, 8, 0.448)]:
+        assert FalAvatar._plate_seconds(line) == seconds
+        assert tool.estimate_cost({**base, "audio_duration_seconds": line}) == billed
+    # The plate's limits: never under 2 seconds, never over 15.
+    assert FalAvatar._plate_seconds(0.4) == 2 and FalAvatar._plate_seconds(14.5) == 15
+    # The composite adds the lip-sync pass, which follows the line: 7 s of plate, 6 s of sync.
+    assert tool.estimate_cost({**base, "audio_duration_seconds": 5.542, "model": "h3max-acting"}) \
+        == round(7 * 0.056 + 6 * 0.20, 4)
+    # A lip fix on an existing take has no plate.
+    assert tool.estimate_cost({"video_url": "http://x/v.mp4", "audio_url": "http://x/a.mp3",
+                               "audio_duration_seconds": 5.542}) == round(6 * 0.20, 4)
+
+
+def test_h3_video_applies_the_768p_multiplier_and_bills_what_was_asked_for():
     from tools.video.h3_max_video import H3MaxVideo
 
     tool = H3MaxVideo()
@@ -48,7 +69,15 @@ def test_h3_video_applies_the_768p_multiplier_and_rounds_up():
     assert tool._billed_rate(ep, {"resolution": "768P"}) == round(0.035 * 1.6, 4)
     assert tool._billed_rate(ep, {"resolution": "480P"}) == 0.035
     assert tool._billed_rate(ep, {}) == round(0.035 * 1.6, 4)  # hi-res is the default
-    # Output cost: a 5.18s file bills as 6 whole seconds at the billed rate.
+    # fal bills the length asked for: the four 5-second clips of videos 713 and 714 were billed
+    # $0.28 each, though every file runs 5.18 s. The estimate and the recorded cost said $0.336.
+    clip = {"image_url": "http://x/p.png", "prompt": "the desk, slow push in", "duration": 5}
+    assert tool.estimate_cost(clip) == 0.28
+    assert tool._output_cost(ep, "/nonexistent.mp4", clip) == 0.28
+    assert tool.estimate_cost({**clip, "duration": 8}) == round(8 * 0.056, 4)
+    assert tool.estimate_cost({**clip, "duration": None, "provider_params": {"duration": 10}}) == 0.56
+    assert tool.estimate_cost({**clip, "resolution": "480P"}) == round(5 * 0.035, 4)
+    # A length that is not whole still rounds up, never down.
     assert tool._output_cost(ep, "/nonexistent.mp4", {"duration": 5.18}) == round(6 * 0.056, 4)
 
 

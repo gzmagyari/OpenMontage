@@ -267,8 +267,10 @@ def test_the_real_avatar_tool_called_the_way_the_agent_calls_it_is_denied(tmp_pa
     assert "PAID-GENERATION BUDGET REACHED" in stdout and "fal_avatar" in stdout
     state = state_of(directory)
     assert state.spent_usd == 0.0
-    assert state.denials[0]["tool"] == "fal_avatar" and state.denials[0]["estimate_usd"] == pytest.approx(2.56)  # (0.056 plate + 0.20 sync)/s x 10s,
-    # the real billed rates (billing events 2026-11-09); was 0.85 on the stale table
+    # 11 s of plate at $0.056 (the 10 s line plus headroom) and 10 s of lip-sync at $0.20: the
+    # real billed rates and lengths (billing events 2026-11-09 and video 714); was 0.85 on the
+    # stale table, then 2.56 while the plate was counted by the line.
+    assert state.denials[0]["tool"] == "fal_avatar" and state.denials[0]["estimate_usd"] == pytest.approx(2.616)
     assert not Path(output).exists()
 
 
@@ -319,6 +321,50 @@ def test_meter_llm_usage_estimate_and_exact():
     meter.add_usage(None)                  # absent usage never crashes the stream
     meter.llm_exact = 0.21
     assert meter.llm_spend() == 0.21
+
+
+def test_the_live_model_spend_never_steps_back():
+    """Two meters see the model's spend: the session's own messages, which run behind, and the
+    gateway's. Each wrote the job's line in turn, so video 714's running total read $3.22, then
+    $2.95, then $3.21 at the end. The figures are that job's, two minutes in."""
+    meter = BudgetMeter(lambda: 6.0)
+    meter.llm_estimate = 0.2535
+    assert meter.live_llm() == 0.2535
+    assert meter.live_llm(0.3172) == 0.3172          # the gateway has seen more
+    meter.llm_estimate = 0.2505                      # the next message, from the meter that lags
+    assert meter.live_llm() == 0.3172
+    meter.llm_estimate = 0.2721
+    assert meter.live_llm(0.30) == 0.3172            # a gateway reading below the line changes nothing
+    meter.llm_estimate = 0.41
+    assert meter.live_llm() == 0.41                  # and it still rises with either meter
+    assert meter.live_llm(None) == 0.41              # no gateway (an unboxed run)
+    meter.llm_exact = 0.8542
+    assert meter.llm_spend() == 0.8542               # the exact cost is what the job settles on
+
+
+def test_a_ledger_rebuild_keeps_the_models_line_under_either_name():
+    """Behind a custom upstream the model's line is billed as "llm-gateway"; rebuilding the
+    generation lines dropped it, and the job's spend fell by the whole model cost until the
+    gateway's meter next moved."""
+    from engine.agent.runner import _set_generation_lines
+    from engine.jobs.models import CostLine
+
+    class _Cost:
+        def __init__(self, lines):
+            self.lines = lines
+            self.spent_usd = round(sum(line.usd for line in lines), 4)
+
+    class _Ctx:
+        def __init__(self, lines):
+            self.job = type("Job", (), {"cost": _Cost(lines)})()
+            self.store = type("Store", (), {"save": lambda self, job: None})()
+
+    for provider in ("anthropic", "llm-gateway"):
+        ctx = _Ctx([CostLine(item="claude agent", usd=0.75, provider=provider, estimated=True),
+                    CostLine(item="old take", usd=0.39, provider="fal.ai", estimated=True)])
+        _set_generation_lines(ctx, [job_ledger.CostItem("take_A", 0.392, "fal.ai")])
+        assert {line.item: line.usd for line in ctx.job.cost.lines} == {"claude agent": 0.75, "take_A": 0.392}
+        assert ctx.job.cost.spent_usd == 1.142
 
 
 def test_meter_counts_one_api_call_once():

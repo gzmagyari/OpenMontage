@@ -39,6 +39,8 @@ _MAX_REFERENCE_MB = 100
 _WATCH_SECONDS = 5.0
 # How far the agent's own cost log may drift from the tools' recorded spend before a warning.
 _COST_LOG_TOLERANCE_USD = 0.05
+# The names the model's own cost line is billed under: Claude served directly, or a custom upstream.
+_LLM_PROVIDERS = ("anthropic", "llm-gateway")
 # What a session is told when the server comes back in the middle of its run.
 _RESTARTED_PROMPT = (
     "The server restarted and interrupted your run. Continue the original brief in this session: "
@@ -285,8 +287,10 @@ def _stop_leftovers(agent_dir: Path) -> int:
 
 def _set_generation_lines(ctx: JobContext, items: list[job_ledger.CostItem]) -> None:
     """Replace the job's paid-generation lines with what the tool ledger says now. Rebuilt whole
-    each time, so a restart resuming the run can't count a call twice."""
-    lines = [line for line in ctx.job.cost.lines if line.provider == "anthropic"]
+    each time, so a restart resuming the run can't count a call twice. The model's own line
+    stays, under either name it is billed by: dropping it behind a custom upstream took the
+    model's spend off the job until its meter next moved."""
+    lines = [line for line in ctx.job.cost.lines if line.provider in _LLM_PROVIDERS]
     lines += [CostLine(item=item.item, usd=item.usd, provider=item.provider, estimated=item.estimated)
               for item in items]
     ctx.job.cost.lines = lines
@@ -393,11 +397,24 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         denials_seen = len(state.denials)
         return state
 
+    llm_written = 0.0
+
+    def show_llm(metered: float = 0.0, *, step: float = 0.0) -> None:
+        """Put the live model spend on the job's line. It only ever moves up: the session's
+        messages and the gateway's meter used to write the line in turn, and the lower figure
+        overwrote the higher one (BudgetMeter.live_llm). ``step`` spares the job file a save for
+        a change too small to matter."""
+        nonlocal llm_written
+        live = meter.live_llm(metered)
+        if live > llm_written + step:
+            llm_written = live
+            _set_line(ctx, "claude agent", live, llm_provider, estimated=True)
+
     def on_message(message: Any) -> None:
         from claude_agent_sdk import AssistantMessage, UserMessage
         if isinstance(message, AssistantMessage):
             meter.add_usage(getattr(message, "usage", None), getattr(message, "message_id", None))
-            _set_line(ctx, "claude agent", meter.llm_spend(), llm_provider, estimated=True)
+            show_llm()
         elif isinstance(message, UserMessage):
             sync_ledger()
 
@@ -420,7 +437,6 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
 
     async def watch(box=None) -> None:
         """Keeps the money state current during a long tool call; returns if spend passes the ceiling."""
-        gateway_shown = 0.0
         while True:
             await asyncio.sleep(_WATCH_SECONDS)
             try:
@@ -430,12 +446,11 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             sync_ledger()
             gateway = getattr(box, "gateway", None)
             if gateway is not None:
-                # Through a non-Anthropic upstream the SDK streams zero usage, so the gateway
-                # meter is the only live view of the model spend; show it as it grows.
-                live = gateway.spend_usd
-                if live > max(meter.llm_spend(), gateway_shown) + 0.005:
-                    gateway_shown = live
-                    _set_line(ctx, "claude agent", round(live, 4), llm_provider, estimated=True)
+                # The gateway prices every finished model call, output tokens included; the
+                # session's own messages run behind it (and through a non-Anthropic upstream
+                # carry no usage at all). Show the gateway's figure as it grows, on top of
+                # what earlier boxes of this job metered.
+                show_llm(gateway_spend + gateway.spend_usd, step=0.005)
             if meter.generation_spend() > meter.budget() * 1.5 + 0.50:
                 return
 

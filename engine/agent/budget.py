@@ -37,6 +37,7 @@ class BudgetMeter:
         self.actuals_total = 0.0
         self.llm_estimate = 0.0
         self.llm_exact: float | None = None
+        self._llm_shown = 0.0
         self._seen_messages: set[str] = set()
 
     def budget(self) -> float:
@@ -75,3 +76,18 @@ class BudgetMeter:
 
     def llm_spend(self) -> float:
         return round(self.llm_exact if self.llm_exact is not None else self.llm_estimate, 4)
+
+    def live_llm(self, metered: float = 0.0) -> float:
+        """The model spend to show while the run is live. Two meters see it: this one, fed by the
+        session's own messages, which runs behind (a call's output tokens arrive when the run
+        ends), and the box gateway's (``metered``), which prices every finished call. Each used
+        to write the job's model line in turn, so a running job's spend rose and fell by tens of
+        cents (video 714: $3.22, $2.95, then $3.21 at the end). The figure shown is the higher
+        of the two and never lower than it has been; the exact cost replaces it when the run
+        ends."""
+        try:
+            metered = float(metered or 0.0)
+        except (TypeError, ValueError):
+            metered = 0.0
+        self._llm_shown = max(self._llm_shown, self.llm_estimate, metered)
+        return round(self._llm_shown, 4)

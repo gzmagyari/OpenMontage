@@ -121,6 +121,16 @@ class FalAvatar(BaseTool):
     _POLL_INTERVAL_SECONDS = 5
     _MAX_WAIT_SECONDS = 1200
     _MIN_AUDIO_PEAK = 0.005  # below this the track is treated as silent and refused
+    # The plate is asked for the line plus this much, so the last word is never cut short; the
+    # lip-sync pass, or the native trim, cuts it back to the line.
+    _PLATE_HEADROOM_SECONDS = 0.6
+
+    @classmethod
+    def _plate_seconds(cls, audio_seconds: float) -> int:
+        """The plate length asked of fal for a line: whole seconds, the line plus headroom
+        rounded up, between 2 and 15. It is also what fal bills. Counting the line alone priced
+        video 714's 5.54 s take at 6 seconds; fal had been asked for 7 and billed 7."""
+        return min(15, max(2, math.ceil(float(audio_seconds) + cls._PLATE_HEADROOM_SECONDS)))
 
     input_schema = {
         "type": "object",
@@ -293,28 +303,25 @@ class FalAvatar(BaseTool):
             else self._PLATE_PER_S
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
-        import math
-
         seconds = self._audio_seconds(inputs)
         if seconds is None:
             raise PriceQuoteRequired(
                 "Billing follows the audio length; pass audio_duration_seconds (or a local audio_path) to estimate"
             )
+        # Fal bills whole seconds, rounded up (billing events, 2026-11-09): a pass that follows
+        # the audio by the line's length, the plate by the length it is asked for.
+        line = math.ceil(float(seconds))
         if inputs.get("video_url") or inputs.get("video_path"):
-            per_second = self._SYNC_PER_S
-        else:
-            model = inputs.get("model") or self.NATIVE
-            if model == self.NATIVE:
-                per_second = self._plate_rate(inputs)
-            elif model == self.COMPOSITE:
-                per_second = self._plate_rate(inputs) + self._SYNC_PER_S
-            elif model in self._MODELS:
-                per_second = self._MODELS[model][1]
-            else:
-                raise ValueError(f"model must be one of: {self.NATIVE}, {self.COMPOSITE}, "
-                                 f"{', '.join(self._MODELS)}")
-        # Fal bills whole output seconds, rounded up (billing events, 2026-11-09).
-        return round(per_second * math.ceil(float(seconds)), 4)
+            return round(self._SYNC_PER_S * line, 4)
+        model = inputs.get("model") or self.NATIVE
+        if model == self.NATIVE:
+            return round(self._plate_rate(inputs) * self._plate_seconds(seconds), 4)
+        if model == self.COMPOSITE:
+            return round(self._plate_rate(inputs) * self._plate_seconds(seconds) + self._SYNC_PER_S * line, 4)
+        if model in self._MODELS:
+            return round(self._MODELS[model][1] * line, 4)
+        raise ValueError(f"model must be one of: {self.NATIVE}, {self.COMPOSITE}, "
+                         f"{', '.join(self._MODELS)}")
 
     @staticmethod
     def _upload(path: Path, api_key: str) -> str:
@@ -548,7 +555,8 @@ class FalAvatar(BaseTool):
             # 2) acting plate conditioned on the audio (composite and native modes) ---------
             if job["mode"] in ("composite", "native") and "plate_video_url" not in job:
                 if job.get("stage") != "plate":  # fresh submit (not resuming a pending plate)
-                    duration = min(15, max(2, math.ceil(job["audio_seconds"] + 0.6)))
+                    duration = self._plate_seconds(job["audio_seconds"])
+                    job["plate_seconds"] = duration
                     payload = {
                         "prompt": inputs.get("prompt") or "The person talks straight into the camera, natural and "
                                                           "energetic, lips following the words of the soundtrack.",
@@ -563,7 +571,9 @@ class FalAvatar(BaseTool):
                     save_job(inputs.get("job_path"), job)
                 plate_result = self._await_result(job, api_key)
                 job["plate_video_url"] = plate_result["video"]["url"]
-                plate_secs = float(plate_result.get("duration") or job["audio_seconds"])
+                # Billed for the length it was asked for, not for the line (see _plate_seconds).
+                plate_secs = float(job.get("plate_seconds") or plate_result.get("duration")
+                                   or self._plate_seconds(job["audio_seconds"]))
                 job["costs"]["plate"] = round(self._plate_rate(inputs) * math.ceil(float(plate_secs)), 4)
                 job.pop("status_url", None)
                 job.pop("response_url", None)

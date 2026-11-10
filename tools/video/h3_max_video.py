@@ -32,23 +32,24 @@ class H3MaxVideo(FalMedia):
         resolution = str((inputs or {}).get("resolution") or "768P").upper()
         return round(rate * (1.0 if resolution == "480P" else self._HI_RES_MULTIPLIER), 4)
 
-    def estimate_cost(self, inputs):
+    def _billed_seconds(self, inputs, endpoint):
+        """fal bills an H3 Max clip for the length it was asked for, in whole seconds, not for
+        the file it delivers: all four 5-second clips of videos 713 and 714 were billed 5
+        seconds, though each file runs 5.18 s. Counting the file (or the overrun a file may
+        have) priced them at 6."""
         import math
 
+        return math.ceil(float(self._requested_seconds(inputs, endpoint)))
+
+    def estimate_cost(self, inputs):
         endpoint = self._route(inputs)[2]
         rate = self._billed_rate(endpoint, inputs)
         if rate is None:
             return super().estimate_cost(inputs)  # keeps the quote-required refusal
-        seconds = self._requested_seconds(inputs, endpoint) + self.DURATION_OVERRUN_SECONDS
-        return round(rate * math.ceil(float(seconds)), 4)
+        return round(rate * self._billed_seconds(inputs, endpoint), 4)
 
     def _output_cost(self, endpoint, output, inputs):
-        import math
-
         rate = self._billed_rate(endpoint, inputs)
         if rate is None:
             return None
-        from tools.analysis.audio_probe import probe_duration
-
-        seconds = probe_duration(output) or self._requested_seconds(inputs, endpoint)
-        return round(rate * math.ceil(float(seconds)), 4)
+        return round(rate * self._billed_seconds(inputs, endpoint), 4)

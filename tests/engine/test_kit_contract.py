@@ -176,6 +176,8 @@ def test_the_reports_reconcile_the_kit_record_and_spend():
     assert "the video came from `kit render`" in ep
     assert "kit record" in pub and "delegation record" in pub
     assert "never show cost, margin or multipliers" in pub
+    # The report's first section is written for the client (see test_brief).
+    assert "opens with `## Summary`, the client's section" in pub
 
 
 def test_the_take_skill_agrees_with_the_brief_on_audio_and_the_default_model():

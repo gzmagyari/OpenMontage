@@ -215,10 +215,15 @@ edit). Leave file names, tool and model names, commands and costs out of these s
 - Run tools with `python`: its interpreter already has every dependency (there is no venv to look
   for). The project directory below and /tmp are the only places you can write.
 - All project work goes in: {project}
-- When finished, write {project}/RUN_REPORT.md: what you produced, every paid call with its cost,
-  the total spend, rough wall time per stage, problems you hit and how you solved them, and the
-  absolute path of the final video. The final MP4 must exist under {project}/exports/ before you
-  stop.
+- When finished, write {project}/RUN_REPORT.md. It opens with a section headed `## Summary`, and
+  that section is the client's: four to eight short lines, one sentence each, about the video in
+  the plain words of your progress notes (what it shows and says, who presents it and how it
+  looks and sounds, what you checked, anything you could not do). No file or folder name, no
+  tool, model or provider name, no command and no cost belongs in it: a line that carries one
+  is cut before the client reads the notes. Everything after it is for the operator: what you
+  produced, every paid call with its cost, the total spend, rough wall time per stage, problems
+  you hit and how you solved them, and the absolute path of the final video. The final MP4 must
+  exist under {project}/exports/ before you stop.
 """
 
 
@@ -243,5 +248,8 @@ Additional paid-generation budget for this revision: ${budget_usd:.2f}; keep log
 {project}/artifacts/cost_log.json.
 
 Export the revised video as a NEW file under {project}/exports/ (do not overwrite the previous
-export) and update {project}/RUN_REPORT.md with a "Revision" section before you stop.
+export). Before you stop, update {project}/RUN_REPORT.md: add a "Revision" section, and bring the
+`## Summary` section it opens with up to date with the revised video (write one if the report has
+none). That section is the client's: short lines, one sentence each, in the plain words of your
+progress notes, with no file, tool, model or provider name, no command and no cost in it.
 """

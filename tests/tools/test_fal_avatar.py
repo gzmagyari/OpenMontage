@@ -29,10 +29,12 @@ def test_contract_and_cost(monkeypatch):
     assert tool.get_info()["provider"] == "fal.ai"
     assert tool.estimate_cost({"model": "kling-v2-standard", "audio_duration_seconds": 10}) == 0.562
     assert tool.estimate_cost({"model": "omnihuman-1.5", "audio_duration_seconds": 10}) == 1.60
-    # Real billed rates (2026-11-09): plate $0.056/s at 768P, lip-sync pass $0.20/s, ceil seconds.
-    assert tool.estimate_cost({"model": "h3max-acting", "audio_duration_seconds": 10}) == 2.56
-    assert tool.estimate_cost({"model": "h3max", "audio_duration_seconds": 10}) == 0.56
-    assert tool.estimate_cost({"audio_duration_seconds": 10}) == 0.56  # native is the default
+    # Real billed rates (2026-11-09): plate $0.056/s at 768P, lip-sync pass $0.20/s, whole seconds.
+    # The plate is asked for the line plus 0.6 s of headroom and billed for that: 11 s for a 10 s
+    # line (video 714's billing events); the lip-sync pass follows the line, 10 s.
+    assert tool.estimate_cost({"model": "h3max-acting", "audio_duration_seconds": 10}) == 2.616
+    assert tool.estimate_cost({"model": "h3max", "audio_duration_seconds": 10}) == 0.616
+    assert tool.estimate_cost({"audio_duration_seconds": 10}) == 0.616  # native is the default
     assert tool.estimate_cost({"video_url": "https://x/v.mp4", "audio_duration_seconds": 10}) == 2.00
     with pytest.raises(PriceQuoteRequired):
         tool.estimate_cost({"model": "veed-fabric-1.0"})  # no audio length to bill against
@@ -262,3 +264,32 @@ def test_native_runs_the_plate_alone_and_trims_to_the_line(tmp_path, monkeypatch
     assert result.data["endpoints"] == ["minimax/h3-max/image-to-video"]
     assert result.data["request_ids"] == ["rid-plate"]
 
+
+
+def test_a_take_is_recorded_at_the_plate_length_it_asked_for(tmp_path, monkeypatch):
+    """fal's answer for a plate carries no duration, so the recorded cost fell back to the line:
+    video 714's 5.54 s take reached the ledger at 6 seconds ($0.336) and was billed 7 ($0.392)."""
+    tool, audio = _chain_tool(monkeypatch, tmp_path, audio_seconds=5.542)
+    out = tmp_path / "take.mp4"
+    post = _response(json_data={"status_url": "https://queue.fal.run/x/requests/rp/status",
+                                "response_url": "https://queue.fal.run/x/requests/rp",
+                                "request_id": "rid-plate"})
+    results = iter([
+        _response(json_data={"status": "COMPLETED"}),
+        _response(json_data={"video": {"url": "https://media.example/plate.mp4"}}),  # no duration
+        _response(content=b"fake-plate-mp4"),
+    ])
+    inputs = {"image_path": str(tmp_path / "face.jpg"), "audio_path": str(audio), "output_path": str(out)}
+    assert tool.estimate_cost(inputs) == 0.392  # the quote the budget is held to says the same
+    with (
+        patch("requests.post", return_value=post) as mock_post,
+        patch("requests.get", side_effect=lambda *a, **k: next(results)),
+    ):
+        result = tool.execute(inputs)
+
+    assert result.success is True, result.error
+    assert mock_post.call_args.kwargs["json"]["duration"] == 7  # ceil(5.542 + 0.6)
+    assert result.cost_usd == 0.392
+    assert result.data["cost_breakdown"] == {"plate": 0.392}
+    assert result.data["resume_job"]["plate_seconds"] == 7
+    assert tool._test_mux_calls == [5.542]  # the delivered take is still cut to the line
