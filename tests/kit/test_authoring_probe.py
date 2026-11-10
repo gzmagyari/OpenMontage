@@ -96,7 +96,7 @@ def test_prompts_come_from_a_file_or_from_two_that_name_no_product(tmp_path: Pat
 
 def _staged(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     project = tmp_path / "job_x"
-    project.mkdir()
+    project.mkdir(parents=True)
     stage.stage_workspace(project)
     return project, probe.fingerprint(project)
 
@@ -148,6 +148,14 @@ def test_a_good_job_passes_and_engine_work_is_named(tmp_path: Path):
     (comp / "src" / "index.ts").write_text("// rewritten\n", encoding="utf-8")
     facts = probe.workspace_facts(project, staged)
     assert facts["unexpected_files"] == ["src/Root.tsx"] and facts["staged_files_changed"] == ["src/index.ts"]
+    # A hand-built caption file is engine work; a picture copied into composition/ is only untidy.
+    (comp / "src" / "captions.json").write_text("[]", encoding="utf-8")
+    (comp / "public").mkdir()
+    (comp / "public" / "shot.jpg").write_bytes(b"jpg")
+    facts = probe.workspace_facts(project, staged)
+    assert facts["unexpected_files"] == ["src/Root.tsx", "src/captions.json"] and facts["stray_media"] == ["public/shot.jpg"]
+    tidy = probe.workspace_facts(*_staged(tmp_path / "other"))
+    assert tidy["stray_media"] == [] and tidy["unexpected_files"] == []
     assert facts["engine_markers"] == ["src/Root.tsx: sequences shots by hand", "src/scenes/Sound.tsx: plays the soundtrack by hand"]
     assert not probe.gate({**good, "workspace": facts})["no engine code was written"]
     # So does Remotion run by hand, and a paid attempt is reported beside the gate.

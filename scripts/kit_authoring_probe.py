@@ -164,6 +164,7 @@ _REMOTION_BY_HAND = re.compile(r"\bremotion\s+(render|still|bundle|studio|compos
 _KIT_COMMAND = re.compile(r"(?:^|[\s;&|(`])(?:kit|python3?\s+-m\s+lib\.videokit)\s+"
                           r"(init|look|voice|check|sheet|mix|render|resolve|help)\b([^\n;&|`]*)")
 _CODE = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_CODE_OR_DATA = (*_CODE, ".json", ".css", ".html", ".srt", ".vtt", ".txt", ".md", ".py", ".sh")
 
 
 def _sha(path: Path) -> str:
@@ -248,17 +249,20 @@ def workspace_facts(project_dir: Path, staged: dict[str, str]) -> dict[str, Any]
                                            "lines": len([line for line in text.splitlines() if line.strip()]),
                                            "remotion": imports})
 
-    unexpected, markers = [], []
+    unexpected, stray, markers = [], [], []
     for path in _files(comp) if comp.is_dir() else []:
         rel = path.relative_to(comp).as_posix()
         if rel in STAGED_FIXED:
             continue
         if not _ALLOWED.match(rel):
-            unexpected.append(rel)
+            # Code or data outside the edit, the look and the scenes is where hand-built
+            # machinery lives; a picture or clip copied there is only untidy.
+            (unexpected if path.suffix.lower() in _CODE_OR_DATA else stray).append(rel)
         if path.suffix in _CODE:
             text = path.read_text(encoding="utf-8", errors="replace")
             markers.extend(f"{rel}: {what}" for what, pattern in _ENGINE_MARKERS.items() if pattern.search(text))
     facts["unexpected_files"] = unexpected
+    facts["stray_media"] = stray
     facts["engine_markers"] = markers
     facts["staged_files_changed"] = [rel for rel in STAGED_FIXED
                                      if not (comp / rel).is_file() or _sha(comp / rel) != staged.get(rel)]
@@ -593,7 +597,9 @@ def report(results: list[dict[str, Any]], spend: bool) -> str:
                      f"token lines changed, files changed: {changed})")
         scenes = ", ".join(f"{s.get('file')} ({s.get('lines')} lines)" for s in work.get("custom_scenes") or []) or "none"
         lines.append(f"- custom scenes: {scenes}")
-        for label, key in (("unexpected files", "unexpected_files"), ("engine work in job code", "engine_markers"),
+        for label, key in (("unexpected code or data files", "unexpected_files"),
+                           ("media copied into composition/ (untidy, not engine work)", "stray_media"),
+                           ("engine work in job code", "engine_markers"),
                            ("staged files changed", "staged_files_changed")):
             if work.get(key):
                 lines.append(f"- {label}: {', '.join(work[key])}")
