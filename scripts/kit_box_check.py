@@ -3,9 +3,11 @@
 
 No model and no paid tool: a real box is built the way a job builds one (engine/sandbox/box.py),
 the kit's workspace is staged the way the runner stages it, and INSIDE the box a small video is
-made end to end from synthetic media: voice timing, soundtrack, check, sheet, render. It passes
-when every kit command works under the box's rules (read-only repository, no network, only the
-project and /tmp writable) and the export is what the kit promises.
+made end to end from synthetic media, in the order a job works: a draft check and a draft
+sheet while nothing has been generated yet (a shot, a scene's backdrop and the music are all
+still missing), then voice timing, soundtrack, check, sheet, render. It passes when every kit
+command works under the box's rules (read-only repository, no network, only the project and
+/tmp writable) and the export is what the kit promises.
 
     docker exec -w /app openmontage-api python scripts/kit_box_check.py
 """
@@ -39,20 +41,26 @@ EDIT = {
     "music": {"file": "assets/audio/music.wav"},
     "main": [
         {"video": "assets/video/clip.mp4", "until": {"word": "stands"}},
-        {"scene": "KineticText", "props": {"text": "Made in\nthe box", "emphasis": "box"}, "until": {"voice": "end"}, "enter": "slide-up"},
+        {"scene": "KineticText", "props": {"text": "Made in\nthe box", "emphasis": "box", "backdrop": {"video": "assets/video/back.mp4", "dim": 0.5}},
+         "until": {"voice": "end"}, "enter": "slide-up"},
         {"video": "assets/video/clip.mp4", "start": 1, "for": 1},
     ],
     "overlays": [{"tag": "hello", "from": 0.3, "for": 1.2}],
 }
 
-# What the director would run, in the order it runs it.
+# What the director would run, in the order it runs it. The draft comes while the paid batch
+# would still be generating: the kit has to show what is missing without anyone making a
+# stand-in file, and must put nothing where the real files belong.
 STEPS = [
+    ("restyle", "sed -i 's/#FFD400/#35E0A1/' composition/src/look/tokens.ts"),
+    ("check --draft", "kit check --draft > /tmp/draft.txt; code=$?; cat /tmp/draft.txt;"
+                      " [ $code -eq 0 ] && grep -q 'Still generating (3)' /tmp/draft.txt"),
+    ("sheet --draft", "kit sheet --draft && test -f work/kit/sheet.jpg && test ! -e assets && rm work/kit/sheet.jpg"),
     ("media", "mkdir -p assets/audio assets/video"
               " && ffmpeg -y -v error -f lavfi -i sine=frequency=330:duration=2.5 assets/audio/A.wav"
               " && ffmpeg -y -v error -f lavfi -i sine=frequency=220:duration=8 assets/audio/music.wav"
-              " && ffmpeg -y -v error -f lavfi -i testsrc2=size=540x960:rate=30:duration=4 -pix_fmt yuv420p assets/video/clip.mp4"),
-    ("restyle", "sed -i 's/#FFD400/#35E0A1/' composition/src/look/tokens.ts"),
-    ("check --draft", "kit check --draft"),
+              " && ffmpeg -y -v error -f lavfi -i testsrc2=size=540x960:rate=30:duration=4 -pix_fmt yuv420p assets/video/clip.mp4"
+              " && cp assets/video/clip.mp4 assets/video/back.mp4"),
     ("voice", "kit voice"),
     ("mix", "kit mix"),
     ("check", "kit check"),
