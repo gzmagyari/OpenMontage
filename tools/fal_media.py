@@ -191,8 +191,17 @@ class FalMedia(BaseTool):
                 else "text_to_video"
             )
         endpoint = self.routes.get(model, {}).get(operation)
+        if not endpoint and "model" not in inputs:
+            # No model was named and the default one cannot do this operation: the first model
+            # that can takes it (H3 Max for a reference clip, while Turbo is the default).
+            for other, operations in self.routes.items():
+                if operation in operations:
+                    model, endpoint = other, operations[operation]
+                    break
         if not endpoint:
-            raise ValueError(f"Unsupported model/operation: {model}/{operation}")
+            able = [name for name, operations in self.routes.items() if operation in operations]
+            hint = f" ({operation} is on: {', '.join(able)})" if able else ""
+            raise ValueError(f"Unsupported model/operation: {model}/{operation}{hint}")
         return model, operation, endpoint
 
     def build_request(self, inputs):

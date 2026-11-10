@@ -36,7 +36,12 @@ def test_contract_and_cost(monkeypatch):
     # (243 frames, 10.13 s) holds the line; the lip-sync pass follows the line, 10 s.
     assert tool.estimate_cost({"model": "h3max-acting", "audio_duration_seconds": 10}) == 2.56
     assert tool.estimate_cost({"model": "h3max", "audio_duration_seconds": 10}) == 0.56
-    assert tool.estimate_cost({"audio_duration_seconds": 10}) == 0.56  # native is the default
+    # The default take is H3 Max Turbo, at half the plate rate ($0.028/s at 768P, $0.0175 at 480P).
+    assert tool.estimate_cost({"audio_duration_seconds": 10}) == 0.28
+    assert tool.estimate_cost({"model": "h3max-turbo", "audio_duration_seconds": 10}) == 0.28
+    assert tool.estimate_cost({"audio_duration_seconds": 10, "resolution": "480P"}) == 0.175
+    with pytest.raises(ValueError, match="h3max-turbo, h3max, h3max-acting"):
+        tool.estimate_cost({"model": "no-such-model", "audio_duration_seconds": 10})
     assert tool.estimate_cost({"video_url": "https://x/v.mp4", "audio_duration_seconds": 10}) == 2.00
     with pytest.raises(PriceQuoteRequired):
         tool.estimate_cost({"model": "veed-fabric-1.0"})  # no audio length to bill against
@@ -274,9 +279,12 @@ def test_native_runs_the_plate_alone_and_trims_to_the_line(tmp_path, monkeypatch
     assert out.read_bytes() == b"fake-plate-mp4"
     assert tool._test_mux_calls == [9.0]  # trimmed to the line, not the clip's silent tail
     assert tool._test_mux_speeds == [None]  # and played as it came
-    assert result.cost_usd == round(0.056 * 9, 4)  # 9 s of plate at the 768P rate, nothing else
-    assert result.data["mode"] == "native" and result.data["model"] == "h3max"
-    assert result.data["endpoints"] == ["minimax/h3-max/image-to-video"]
+    # No model named: the take is made on H3 Max Turbo, and says so.
+    assert mock_post.call_args.args == ("https://queue.fal.run/minimax/h3-max-turbo/image-to-video",)
+    assert result.cost_usd == round(0.028 * 9, 4)  # 9 s of Turbo plate at the 768P rate, nothing else
+    assert result.data["mode"] == "native" and result.data["model"] == "h3max-turbo"
+    assert result.data["endpoints"] == ["minimax/h3-max-turbo/image-to-video"]
+    assert result.model == "minimax/h3-max-turbo/image-to-video"
     assert result.data["request_ids"] == ["rid-plate"]
 
 
@@ -328,7 +336,7 @@ def test_the_model_is_sent_the_line_padded_to_the_length_of_its_clip(tmp_path, m
     job = result.data["resume_job"]
     assert job["plate_seconds"] == 4 and job["plate_audio_seconds"] == 4.458
     assert job["audio_url"] == "https://up.example/line.wav"  # the line itself stays the job's audio
-    assert result.cost_usd == round(0.056 * 4, 4)  # fal bills the seconds asked for (billed $0.224)
+    assert result.cost_usd == round(0.028 * 4, 4)  # fal bills the seconds asked for (billed $0.112)
     # The clip came back as long as the audio it was sent: cut at the line's end, nothing else.
     assert tool._test_mux_calls == [4.133] and tool._test_mux_speeds == [None]
     assert "plate_fit" not in job and "note" not in result.data
@@ -405,8 +413,11 @@ def test_a_take_is_recorded_at_the_plate_length_it_asked_for(tmp_path, monkeypat
         _response(json_data={"video": {"url": "https://media.example/plate.mp4"}}),  # no duration
         _response(content=b"fake-plate-mp4"),
     ])
-    inputs = {"image_path": str(tmp_path / "face.jpg"), "audio_path": str(audio), "output_path": str(out)}
+    # On the full model, as video 714's take was made: the model is named.
+    inputs = {"image_path": str(tmp_path / "face.jpg"), "audio_path": str(audio), "output_path": str(out),
+              "model": "h3max"}
     assert tool.estimate_cost(inputs) == 0.336  # the quote the budget is held to says the same
+    assert tool.estimate_cost({k: v for k, v in inputs.items() if k != "model"}) == 0.168  # Turbo, the default
     with (
         patch("requests.post", return_value=post) as mock_post,
         patch("requests.get", side_effect=lambda *a, **k: next(results)),
@@ -418,7 +429,31 @@ def test_a_take_is_recorded_at_the_plate_length_it_asked_for(tmp_path, monkeypat
     assert result.cost_usd == 0.336
     assert result.data["cost_breakdown"] == {"plate": 0.336}
     assert result.data["resume_job"]["plate_seconds"] == 6
+    # The job keeps the model that really made the plate: a resumed job is priced by it.
+    assert mock_post.call_args.args == ("https://queue.fal.run/minimax/h3-max/image-to-video",)
+    assert result.data["resume_job"]["plate_endpoint"] == "minimax/h3-max/image-to-video"
+    assert result.data["model"] == "h3max" and result.data["endpoints"] == ["minimax/h3-max/image-to-video"]
     assert tool._test_mux_calls == [5.542]  # the delivered take is still cut to the line
+
+
+def test_each_take_model_has_its_plate_and_its_rates():
+    """H3 Max Turbo takes the same inputs and returns the same clip lengths as H3 Max, at half
+    the price: video 717's hook take made on both was billed $0.112 against $0.224 for the 4
+    seconds asked. Turbo is the default; `h3max` keeps the full model; the composite's plate
+    stays on the full model, as does a job saved before the model keys existed."""
+    assert FalAvatar.NATIVE == "h3max-turbo" and FalAvatar.NATIVE_FULL == "h3max"
+    assert FalAvatar._plate("h3max-turbo") == ("minimax/h3-max-turbo/image-to-video", 0.028, 0.0175)
+    assert FalAvatar._plate("h3max") == ("minimax/h3-max/image-to-video", 0.056, 0.035)
+    assert FalAvatar._plate("h3max-acting") == ("minimax/h3-max/image-to-video", 0.056, 0.035)
+    assert FalAvatar._plate(None) == ("minimax/h3-max/image-to-video", 0.056, 0.035)
+    tool = FalAvatar()
+    assert tool._plate_rate({}) == 0.028 and tool._plate_rate({"resolution": "480P"}) == 0.0175
+    assert tool._plate_rate({}, "h3max") == 0.056 and tool._plate_rate({"model": "h3max"}) == 0.056
+    schema = tool.input_schema["properties"]["model"]
+    assert schema["default"] == "h3max-turbo" and schema["enum"][:3] == ["h3max-turbo", "h3max", "h3max-acting"]
+    # The two real takes, as fal billed them: 4 s asked for a 3.18 s line.
+    assert tool.estimate_cost({"audio_duration_seconds": 3.183}) == 0.112
+    assert tool.estimate_cost({"audio_duration_seconds": 3.183, "model": "h3max"}) == 0.224
 
 
 def test_a_missing_audio_file_is_named_not_called_a_pricing_problem(tmp_path, monkeypatch):

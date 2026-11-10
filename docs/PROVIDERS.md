@@ -341,7 +341,10 @@ reference-image inputs are normalized to the provider's `images` array.
 **Tools unlocked:** `flux_image`, `recraft_image`, `seedream_image`,
 `kling_video`, `veo_video`, `seedance_video`, `gemini_omni_fal`,
 `minimax_fal_video`, `fal_elevenlabs_tts`, `fal_lyria_music` (the default music bed:
-Lyria 3.5, $0.10 a track), `fal_elevenlabs_music` (exact length, $0.60 per started minute)
+Lyria 3.5, $0.10 a track), `fal_elevenlabs_music` (exact length, $0.60 per started minute),
+`fal_avatar` (talking takes) and `h3_max_video` (clips without speech): both use H3 Max
+Turbo by default, $0.028 a second at 768P, and take the full H3 Max model by name
+(`h3max` / `h3-max`, $0.056 a second)
 **Env var:** `FAL_KEY`
 
 #### Setup

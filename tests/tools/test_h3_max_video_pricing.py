@@ -46,15 +46,42 @@ def test_quotes_follow_the_route_and_the_requested_length():
     # (billing events, 2026-11-09). It bills the length asked for, here the default 5 s: the
     # four 5-second clips of videos 713 and 714 were billed 5 seconds each, not the 6 that
     # counting a possible overrun had quoted.
-    assert tool.estimate_cost({"prompt": "pour", "image_path": "still.png"}) == pytest.approx(0.056 * 5)
-    assert tool.estimate_cost({"prompt": "pour", "image_path": "still.png",
+    full = {"model": "h3-max"}
+    assert tool.estimate_cost({**full, "prompt": "pour", "image_path": "still.png"}) == pytest.approx(0.056 * 5)
+    assert tool.estimate_cost({**full, "prompt": "pour", "image_path": "still.png",
                                "resolution": "480P"}) == pytest.approx(0.035 * 5)
-    assert tool.estimate_cost({"prompt": "pour", "image_url": "https://x/a.png", "duration": 2}) == pytest.approx(0.056 * 2)
+    assert tool.estimate_cost({**full, "prompt": "pour", "image_url": "https://x/a.png", "duration": 2}) == pytest.approx(0.056 * 2)
     assert tool.estimate_cost({"prompt": "pour", "operation": "reference_to_video",
                                "provider_params": {"duration": 8}}) == pytest.approx(0.08 * 8)
     catalog = tool.get_info()["model_catalog"]["h3-max"]
     assert catalog["pricing_status"] == "priced"
     assert catalog["usd_per_output_second"]["image_to_video"] == 0.035  # the catalog lists the base rate
+
+
+def test_turbo_is_the_default_clip_model_at_half_the_rate():
+    """H3 Max Turbo: the same inputs as H3 Max, $0.0175 a second listed and $0.028 billed at
+    768P (the same 1.6x). It is the first model, so a clip that names none is made on it."""
+    tool = H3MaxVideo()
+    assert list(tool.routes) == ["h3-max-turbo", "h3-max"]
+    assert tool.input_schema["properties"]["model"]["default"] == "h3-max-turbo"
+    clip = {"prompt": "pour", "image_path": "still.png"}
+    assert tool._route(clip) == ("h3-max-turbo", "image_to_video", "minimax/h3-max-turbo/image-to-video")
+    assert tool.estimate_cost(clip) == pytest.approx(0.028 * 5)
+    assert tool.estimate_cost({**clip, "resolution": "480P"}) == pytest.approx(0.0175 * 5)
+    assert tool._route({"prompt": "a kettle boils"}) == ("h3-max-turbo", "text_to_video", "minimax/h3-max-turbo/text-to-video")
+    catalog = tool.get_info()["model_catalog"]["h3-max-turbo"]
+    assert catalog["pricing_status"] == "priced"
+    assert catalog["usd_per_output_second"] == {"text_to_video": 0.0175, "image_to_video": 0.0175}
+    # Turbo's reference route costs what H3 Max's does and takes fewer inputs, so it is not
+    # offered: a reference clip that names no model goes to H3 Max, and one that names Turbo
+    # is told plainly.
+    assert tool._route({"prompt": "pour", "operation": "reference_to_video"}) == (
+        "h3-max", "reference_to_video", "minimax/h3-max/reference-to-video")
+    with pytest.raises(ValueError, match="h3-max-turbo/reference_to_video"):
+        tool._route({"prompt": "pour", "operation": "reference_to_video", "model": "h3-max-turbo"})
+    # The request goes to Turbo's own address and passes fal's contract for it.
+    built = tool.build_request({**clip, "image_path": None, "image_url": "https://x/a.png", "duration": 5})
+    assert "minimax/h3-max-turbo/image-to-video" in str(built)
 
 
 def test_a_route_without_a_rate_still_needs_a_quote():
@@ -67,8 +94,9 @@ def test_a_finished_clip_is_recorded_at_the_length_it_asked_for(fake_fal, tmp_pa
     result = H3MaxVideo().execute({"prompt": "pour", "image_url": "https://x/a.png",
                                    "output_path": str(tmp_path / "hook.mp4")})
     assert result.success, result.error
-    # The file runs 5.4 s; fal bills the 5 s it was asked for (768P), and so does the record.
-    assert result.cost_usd == pytest.approx(0.056 * 5)
+    # The file runs 5.4 s; fal bills the 5 s it was asked for (768P, Turbo), and so does the record.
+    assert result.cost_usd == pytest.approx(0.028 * 5)
+    assert ("POST", "https://queue.fal.run/minimax/h3-max-turbo/image-to-video") in fake_fal
     assert result.data["cost_status"] == "priced"
 
 
@@ -77,9 +105,9 @@ def test_in_a_job_the_clip_is_quoted_then_billed(fake_fal, in_a_job, tmp_path):
                                  "output_path": str(tmp_path / "hook.mp4")}).success
     entries = job_ledger.read_entries(in_a_job)
     assert [e["event"] for e in entries] == ["start", "finish"]
-    assert entries[0]["estimate_usd"] == pytest.approx(0.28)  # the quote and the record agree
+    assert entries[0]["estimate_usd"] == pytest.approx(0.14)  # the quote and the record agree
     assert entries[1]["request_ids"] == ["r1"]  # the provider id rides into the ledger
-    assert job_ledger.summarize(entries).spent_usd == pytest.approx(0.28)
+    assert job_ledger.summarize(entries).spent_usd == pytest.approx(0.14)
     assert job_ledger.summarize(entries).items[0].request_ids == ("r1",)
 
 

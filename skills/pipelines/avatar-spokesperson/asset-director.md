@@ -27,9 +27,10 @@ Do not hide a blocked avatar path. Record it.
 
 ### 1a. Take Model Economics (Binding)
 
-Standard presenter takes use `fal_avatar` `model: "h3max"` - one audio-conditioned acting
-generation whose native lips ship, trimmed to the line with the verbatim voice ($0.056/s at
-768P). `"h3max-acting"` (adds the frame-accurate lip-sync pass, ~$0.26/s) is for tight
+Standard presenter takes use `fal_avatar` `model: "h3max-turbo"` - one audio-conditioned
+acting generation whose native lips ship, trimmed to the line with the verbatim voice
+($0.028/s at 768P; `"h3max"` is the same take on the full model at twice the price).
+`"h3max-acting"` (adds the frame-accurate lip-sync pass, ~$0.26/s) is for tight
 close-ups and lip-critical shots only. When QC rejects a take's LIPS specifically, upgrade
 that take in place: call `fal_avatar` with the take as `video_path` plus its line's audio
 (the lip-fix mode, +$0.20/s) instead of regenerating the whole take.
@@ -123,7 +124,7 @@ registry.discover()
 tool = registry._tools["fal_avatar"]
 BASE = "/data/projects/<project>"
 takes = {
-    "avatar1": {"model": "h3max", "image_path": ..., "audio_path": ..., ...},
+    "avatar1": {"model": "h3max-turbo", "image_path": ..., "audio_path": ..., ...},
     "avatar2": {...},
     "avatar3": {...},
 }
@@ -181,7 +182,7 @@ split a long line into two takes, and it names the prepared audio and the take p
 ```python
 subprocess.run(["kit", "voice"], check=True, cwd=BASE)          # after every line is spoken
 voice = json.load(open(f"{BASE}/work/kit/voice.json"))
-takes = {part["id"]: {"model": "h3max", "image_path": PORTRAIT, "prompt": PROMPT,
+takes = {part["id"]: {"model": "h3max-turbo", "image_path": PORTRAIT, "prompt": PROMPT,
                       "audio_path": f"{BASE}/{part['audio']}",   # the prepared file, as it is
                       "output_path": f"{BASE}/{part['take']}"}
          for line in voice["lines"] for part in line["parts"] if part.get("take")}

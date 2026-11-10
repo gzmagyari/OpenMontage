@@ -5,7 +5,10 @@ generate narration with a TTS tool, then produce the talking video from it).
 Wraps the avatar models hosted on fal.ai, so no Kling, HeyGen or local GPU
 setup is needed - only FAL_KEY.
 
-Three modes:
+Four modes:
+- ``h3max-turbo`` (the default) and ``h3max``: one acting plate conditioned on the audio, its
+  own lips delivered, cut to the line with the original audio re-muxed verbatim. Turbo is
+  the same take at half the price of H3 Max.
 - single-pass avatar models (kling-v2-*, veed-fabric, omnihuman): photo + audio -> talking video.
 - ``h3max-acting``: free-form prompted ACTING with accurate lips, in two passes -
   an H3 Max action plate conditioned on the audio, then an H3 Max lip-sync pass,
@@ -84,7 +87,8 @@ class FalAvatar(BaseTool):
         "offline": False,
     }
     best_for = [
-        "acted, lip-accurate presenter takes from one portrait + TTS narration (model 'h3max-acting')",
+        "acted presenter takes from one portrait + TTS narration (the default model 'h3max-turbo')",
+        "frame-accurate lips on a tight close-up (model 'h3max-acting')",
         "keeping one exact voice across every take (the delivered soundtrack is the input audio, verbatim)",
         "fixing the lip-sync of an existing speech video to a new or corrected audio track",
         "avatar videos with only a fal.ai credential",
@@ -104,19 +108,28 @@ class FalAvatar(BaseTool):
         "omnihuman-1.5": ("fal-ai/bytedance/omnihuman/v1.5", 0.16),
     }
     COMPOSITE = "h3max-acting"
-    # The plate alone, delivered: audio-conditioned acting with H3's native lips, trimmed to the
-    # line and re-muxed with the verbatim voice. 78% cheaper than the composite; the owner judged
-    # the native lips acceptable for standard takes (2026-11-09). Lip-critical shots upgrade via
-    # the composite or the lip-fix mode on an existing take.
-    NATIVE = "h3max"
-    # Real billed rates from fal billing events, 2026-11-09 (the pricing API misleads here:
-    # lip-sync lists "$0.05 per unit" where a unit is 0.25s -> $0.20/s, and image-to-video
-    # lists the $0.035 480P base while 768P bills 1.6x -> $0.056/s). Fal rounds output
-    # seconds UP. Settlement reconciles against billing events either way (lib/fal_billing).
+    # The plate alone, delivered: audio-conditioned acting with the model's native lips, trimmed
+    # to the line and re-muxed with the verbatim voice. Far cheaper than the composite; the owner
+    # judged the native lips acceptable for standard takes (2026-11-09). Lip-critical shots
+    # upgrade via the composite or the lip-fix mode on an existing take.
+    # The default plate is H3 Max Turbo since 2026-11-10: the same inputs and the same clip
+    # lengths as H3 Max at half the price. Video 717's hook take made on both: billed $0.112
+    # against $0.224, lips on the same words within a frame, a picture the owner called "just
+    # as good". `h3max` keeps the full model for a take that wants it.
+    NATIVE = "h3max-turbo"
+    NATIVE_FULL = "h3max"
+    # Real billed rates from fal billing events, 2026-11-09 and 11-10 (the pricing API misleads
+    # here: lip-sync lists "$0.05 per unit" where a unit is 0.25s -> $0.20/s, and image-to-video
+    # lists the 480P base while 768P bills 1.6x). Fal rounds output seconds UP. Settlement
+    # reconciles against billing events either way (lib/fal_billing).
+    # native model key -> (fal endpoint, USD per second at 768P, USD per second at 480P)
+    _PLATES: dict[str, tuple[str, float, float]] = {
+        "h3max-turbo": ("minimax/h3-max-turbo/image-to-video", 0.028, 0.0175),
+        "h3max": ("minimax/h3-max/image-to-video", 0.056, 0.035),
+    }
+    # The composite's plate stays on the full model: its lip-sync pass was only ever run on that.
     _PLATE_ENDPOINT = "minimax/h3-max/image-to-video"          # $0.056/s at 768P, $0.035 at 480P
     _SYNC_ENDPOINT = "minimax/h3-max/lip-sync/video-to-video"  # $0.05 per 0.25s unit = $0.20/s
-    _PLATE_PER_S_480 = 0.035
-    _PLATE_PER_S = 0.056
     _SYNC_PER_S = 0.20
     _POLL_INTERVAL_SECONDS = 5
     _MAX_WAIT_SECONDS = 1200
@@ -177,14 +190,15 @@ class FalAvatar(BaseTool):
             "video_path": {"type": "string", "description": "Local video for lip-sync fix mode; uploaded to fal storage"},
             "model": {
                 "type": "string",
-                "default": "h3max",
-                "enum": ["h3max", "h3max-acting", "kling-v2-standard", "kling-v2-pro", "veed-fabric-1.0",
-                         "omnihuman-1.5"],
-                "description": "h3max = THE DEFAULT for standard takes: one audio-conditioned H3 Max acting "
-                               "generation with native lips, trimmed to the line and delivered with the "
-                               "verbatim voice ($0.056/s at 768P). h3max-acting = the same plate plus a "
-                               "frame-accurate lip-sync pass (~$0.26/s at 768P) - for tight close-ups and "
-                               "lip-critical shots, or re-sync an existing take via video_url/video_path "
+                "default": "h3max-turbo",
+                "enum": ["h3max-turbo", "h3max", "h3max-acting", "kling-v2-standard", "kling-v2-pro",
+                         "veed-fabric-1.0", "omnihuman-1.5"],
+                "description": "h3max-turbo = THE DEFAULT for standard takes: one audio-conditioned H3 Max "
+                               "Turbo acting generation with native lips, trimmed to the line and delivered "
+                               "with the verbatim voice ($0.028/s at 768P). h3max = the same take on the full "
+                               "H3 Max model at twice the price ($0.056/s). h3max-acting = an H3 Max plate "
+                               "plus a frame-accurate lip-sync pass (~$0.26/s at 768P) - for tight close-ups "
+                               "and lip-critical shots, or re-sync an existing take via video_url/video_path "
                                "(+$0.20/s, no new plate). Single-pass avatars: kling-v2-standard $0.0562/s, "
                                "veed-fabric-1.0 $0.08/s, kling-v2-pro $0.115/s, omnihuman-1.5 $0.16/s",
             },
@@ -385,9 +399,17 @@ class FalAvatar(BaseTool):
             return self._probe_duration(audio_path)
         return None
 
-    def _plate_rate(self, inputs: dict[str, Any]) -> float:
-        return self._PLATE_PER_S_480 if str(inputs.get("resolution") or "768P").upper() == "480P" \
-            else self._PLATE_PER_S
+    @classmethod
+    def _plate(cls, model: str | None) -> tuple[str, float, float]:
+        """Endpoint and rates of the acting plate behind a model key. Any key that is not a
+        native one (the composite, a job saved before the keys existed) is the full model."""
+        if model in cls._PLATES:
+            return cls._PLATES[str(model)]
+        return (cls._PLATE_ENDPOINT, *cls._PLATES[cls.NATIVE_FULL][1:])
+
+    def _plate_rate(self, inputs: dict[str, Any], model: str | None = None) -> float:
+        _, at_768, at_480 = self._plate(model if model is not None else (inputs.get("model") or self.NATIVE))
+        return at_480 if str(inputs.get("resolution") or "768P").upper() == "480P" else at_768
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         seconds = self._audio_seconds(inputs)
@@ -407,13 +429,13 @@ class FalAvatar(BaseTool):
         if inputs.get("video_url") or inputs.get("video_path"):
             return round(self._SYNC_PER_S * line, 4)
         model = inputs.get("model") or self.NATIVE
-        if model == self.NATIVE:
-            return round(self._plate_rate(inputs) * self._plate_seconds(seconds), 4)
+        if model in self._PLATES:
+            return round(self._plate_rate(inputs, model) * self._plate_seconds(seconds), 4)
         if model == self.COMPOSITE:
-            return round(self._plate_rate(inputs) * self._plate_seconds(seconds) + self._SYNC_PER_S * line, 4)
+            return round(self._plate_rate(inputs, model) * self._plate_seconds(seconds) + self._SYNC_PER_S * line, 4)
         if model in self._MODELS:
             return round(self._MODELS[model][1] * line, 4)
-        raise ValueError(f"model must be one of: {self.NATIVE}, {self.COMPOSITE}, "
+        raise ValueError(f"model must be one of: {', '.join(self._PLATES)}, {self.COMPOSITE}, "
                          f"{', '.join(self._MODELS)}")
 
     @staticmethod
@@ -502,11 +524,11 @@ class FalAvatar(BaseTool):
             return ToolResult(success=False, error="image_url or image_path is required")
 
         model = inputs.get("model") or self.NATIVE
-        if model in (self.NATIVE, self.COMPOSITE):
+        if model in self._PLATES or model == self.COMPOSITE:
             return self._run_chain(inputs, api_key)
         if model not in self._MODELS:
             return ToolResult(success=False,
-                              error=f"model must be one of: {self.NATIVE}, {self.COMPOSITE}, "
+                              error=f"model must be one of: {', '.join(self._PLATES)}, {self.COMPOSITE}, "
                                     f"{', '.join(self._MODELS)}")
 
         # -- single-pass avatar models ---------------------------------------------------
@@ -629,14 +651,15 @@ class FalAvatar(BaseTool):
                 if not (inputs.get("video_url") or inputs.get("video_path")) and audio_seconds > 14.5:
                     raise ValueError(f"audio is {audio_seconds:.1f}s; the acting plate caps at 15s - split the take")
                 audio_url = self._upload(audio_local, api_key)
+                asked_model = inputs.get("model") or self.NATIVE
                 if inputs.get("video_url") or inputs.get("video_path"):
                     mode = "sync"
-                elif (inputs.get("model") or self.NATIVE) == self.NATIVE:
+                elif asked_model in self._PLATES:
                     mode = "native"  # the plate alone: trimmed to the line, verbatim voice muxed
                 else:
                     mode = "composite"
                 job = {
-                    "tool": self.name, "model": self.NATIVE if mode == "native" else self.COMPOSITE,
+                    "tool": self.name, "model": asked_model if mode == "native" else self.COMPOSITE,
                     "mode": mode, "stage": "start",
                     "audio_url": audio_url, "audio_local": str(audio_local),
                     "audio_seconds": round(float(audio_seconds), 3), "costs": {},
@@ -670,14 +693,18 @@ class FalAvatar(BaseTool):
                         "prompt_expansion_mode": "disabled",
                     }
                     job["stage"] = "plate"
-                    self._submit(self._PLATE_ENDPOINT, payload, job, api_key)
+                    # The model that makes the plate is the job's own from here on: a resumed job
+                    # is priced and reported by what it was really sent to.
+                    job["plate_endpoint"] = self._plate(job.get("model"))[0]
+                    self._submit(job["plate_endpoint"], payload, job, api_key)
                     save_job(inputs.get("job_path"), job)
                 plate_result = self._await_result(job, api_key)
                 job["plate_video_url"] = plate_result["video"]["url"]
                 # Billed for the length it was asked for, not for the line (see _plate_seconds).
                 plate_secs = float(job.get("plate_seconds") or plate_result.get("duration")
                                    or self._plate_seconds(job["audio_seconds"]))
-                job["costs"]["plate"] = round(self._plate_rate(inputs) * math.ceil(float(plate_secs)), 4)
+                job["costs"]["plate"] = round(self._plate_rate(inputs, job.get("model"))
+                                              * math.ceil(float(plate_secs)), 4)
                 job.pop("status_url", None)
                 job.pop("response_url", None)
                 save_job(inputs.get("job_path"), job)
@@ -739,9 +766,13 @@ class FalAvatar(BaseTool):
             )
         probe = probe_output(output_path)
         cost = round(sum(job["costs"].values()), 4) if job["costs"] else None
-        model_label = {"composite": self.COMPOSITE, "native": self.NATIVE}.get(job["mode"], "h3max-lipsync-fix")
-        endpoints = {"composite": [self._PLATE_ENDPOINT, self._SYNC_ENDPOINT],
-                     "native": [self._PLATE_ENDPOINT]}.get(job["mode"], [self._SYNC_ENDPOINT])
+        # A native take is named by the model that made it (h3max-turbo or h3max).
+        plate_endpoint = job.get("plate_endpoint") or self._plate(job.get("model"))[0]
+        model_label = {"composite": self.COMPOSITE,
+                       "native": job.get("model") if job.get("model") in self._PLATES else self.NATIVE_FULL,
+                       }.get(job["mode"], "h3max-lipsync-fix")
+        endpoints = {"composite": [plate_endpoint, self._SYNC_ENDPOINT],
+                     "native": [plate_endpoint]}.get(job["mode"], [self._SYNC_ENDPOINT])
         data = {
             "provider": self.provider,
             "model": model_label,
@@ -766,5 +797,5 @@ class FalAvatar(BaseTool):
             artifacts=[str(output_path)],
             cost_usd=cost,
             duration_seconds=round(time.time() - started, 2),
-            model=self._SYNC_ENDPOINT if job["mode"] == "sync" else self._PLATE_ENDPOINT,
+            model=self._SYNC_ENDPOINT if job["mode"] == "sync" else plate_endpoint,
         )

@@ -23,7 +23,7 @@ model must fail rather than silently substitute a different model.
 | Gemini 3 Pro Image / Nano Banana Pro | google_imagen | gemini_fal_image, gemini_replicate_image, atlas_refresh_image |
 | Ideogram 4.5 / Precise Edit | ideogram_image | ideogram_fal_image |
 | Wan 3.0 | — | wan_fal_video, wan_atlas_video, wan_replicate_video |
-| H3 Max | — | h3_max_video (fal) |
+| H3 Max / H3 Max Turbo | — | h3_max_video (fal; Turbo is its default model) |
 | LTX-2.5 Fast / Pro | ltx_api_video | — |
 | Eleven v4 / v4 Turbo | elevenlabs_tts | fal_elevenlabs_tts (v4 only) |
 | Gemini 3.8 Flash / Flash-Lite TTS | gemini_tts | — |

@@ -30,14 +30,18 @@ def test_native_takes_price_at_the_plate_rate_alone():
 
     tool = FalAvatar()
     base = {"image_url": "http://x/p.png", "audio_url": "http://x/a.mp3", "audio_duration_seconds": 5.1}
-    # h3max (native) = the plate alone; it is also the DEFAULT when no model is named.
+    # A native take is the plate alone. The DEFAULT, when no model is named, is H3 Max Turbo at
+    # half the rate; h3max is the same take on the full model.
+    assert tool.estimate_cost(base) == round(6 * 0.028, 4)
+    assert tool.estimate_cost({**base, "model": "h3max-turbo"}) == round(6 * 0.028, 4)
+    assert tool.estimate_cost({**base, "resolution": "480P"}) == round(6 * 0.0175, 4)
     assert tool.estimate_cost({**base, "model": "h3max"}) == round(6 * 0.056, 4)
-    assert tool.estimate_cost(base) == round(6 * 0.056, 4)
     assert tool.estimate_cost({**base, "model": "h3max", "resolution": "480P"}) == round(6 * 0.035, 4)
-    # The composite stays the premium option, 4.6x the native price.
+    # The composite stays the premium option, on the full model's plate.
     assert tool.estimate_cost({**base, "model": "h3max-acting"}) == round(6 * 0.256, 4)
     enum = tool.input_schema["properties"]["model"]
-    assert enum["default"] == "h3max" and "h3max" in enum["enum"] and "h3max-acting" in enum["enum"]
+    assert enum["default"] == "h3max-turbo"
+    assert "h3max-turbo" in enum["enum"] and "h3max" in enum["enum"] and "h3max-acting" in enum["enum"]
 
 
 def test_a_take_is_priced_by_the_plate_length_fal_is_asked_for():
@@ -52,7 +56,10 @@ def test_a_take_is_priced_by_the_plate_length_fal_is_asked_for():
     base = {"image_url": "http://x/p.png", "audio_url": "http://x/a.mp3"}
     for line, seconds, billed in [(5.542, 6, 0.336), (4.133, 4, 0.224), (5.042, 5, 0.28), (7.24, 8, 0.448)]:
         assert FalAvatar._plate_seconds(line) == seconds
-        assert tool.estimate_cost({**base, "audio_duration_seconds": line}) == billed
+        assert tool.estimate_cost({**base, "audio_duration_seconds": line, "model": "h3max"}) == billed
+        # The default model, H3 Max Turbo, bills the same seconds at half the rate (a 3.18 s
+        # line asked as 4 s was billed $0.112, 2026-11-10).
+        assert tool.estimate_cost({**base, "audio_duration_seconds": line}) == round(billed / 2, 4)
     # The plate's limits: never under 2 seconds, never over 15.
     assert FalAvatar._plate_seconds(0.4) == 2 and FalAvatar._plate_seconds(14.5) == 15
     # The composite adds the lip-sync pass, which follows the line: 6 s of plate, 6 s of sync.
@@ -73,7 +80,7 @@ def test_h3_video_applies_the_768p_multiplier_and_bills_what_was_asked_for():
     assert tool._billed_rate(ep, {}) == round(0.035 * 1.6, 4)  # hi-res is the default
     # fal bills the length asked for: the four 5-second clips of videos 713 and 714 were billed
     # $0.28 each, though every file runs 5.18 s. The estimate and the recorded cost said $0.336.
-    clip = {"image_url": "http://x/p.png", "prompt": "the desk, slow push in", "duration": 5}
+    clip = {"image_url": "http://x/p.png", "prompt": "the desk, slow push in", "duration": 5, "model": "h3-max"}
     assert tool.estimate_cost(clip) == 0.28
     assert tool._output_cost(ep, "/nonexistent.mp4", clip) == 0.28
     assert tool.estimate_cost({**clip, "duration": 8}) == round(8 * 0.056, 4)
@@ -81,6 +88,15 @@ def test_h3_video_applies_the_768p_multiplier_and_bills_what_was_asked_for():
     assert tool.estimate_cost({**clip, "resolution": "480P"}) == round(5 * 0.035, 4)
     # A length that is not whole still rounds up, never down.
     assert tool._output_cost(ep, "/nonexistent.mp4", {"duration": 5.18}) == round(6 * 0.056, 4)
+    # With no model named the clip is made on H3 Max Turbo, the default: half the rate, the
+    # same 1.6x at 768P (a talking take on its image-to-video route was billed $0.028 a second).
+    turbo = "minimax/h3-max-turbo/image-to-video"
+    plain = {k: v for k, v in clip.items() if k != "model"}
+    assert tool._route(plain)[::2] == ("h3-max-turbo", turbo)
+    assert tool._billed_rate(turbo, {}) == 0.028 and tool._billed_rate(turbo, {"resolution": "480P"}) == 0.0175
+    assert tool.estimate_cost(plain) == 0.14
+    assert tool.estimate_cost({**plain, "duration": 8}) == round(8 * 0.028, 4)
+    assert tool._output_cost(turbo, "/nonexistent.mp4", plain) == 0.14
 
 
 # -- request ids through the ledger ------------------------------------------------------

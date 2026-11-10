@@ -112,7 +112,7 @@ def test_a_revision_goes_through_the_kit_when_the_project_has_an_edit():
     assert "composition/edit.json exists" in text.replace("\\", "/")
     assert "kit render --name" in text
     assert "Otherwise edit the existing composition code as it is" in text  # projects made before the kit
-    assert "model h3max" in text and "h3max-acting for on-camera" not in text
+    assert "model h3max-turbo" in text and "h3max-acting for on-camera" not in text
 
 
 def test_the_guide_makes_the_kit_the_mode_of_headless_jobs():
@@ -194,18 +194,19 @@ def test_the_reports_reconcile_the_kit_record_and_spend():
 def test_the_take_skill_agrees_with_the_brief_on_audio_and_the_default_model():
     # The brief says "read its skill and follow its audio contract": the two must not disagree.
     skill = _flat(_read(REPO / ".agents" / "skills" / "fal-avatar" / "SKILL.md"))
-    assert '`model: "h3max"` (default)' in skill
+    assert '`model: "h3max-turbo"` (default)' in skill and '`model: "h3max"` |' in skill
     assert "with `trim_silence` off" in skill and "`kit voice`" in skill
     assert '"trim_silence": true' not in skill       # the example no longer trims a prepared file
-    assert "$0.056/s at 768P" in skill and "+$0.20/s" in skill
+    assert "$0.028/s at 768P" in skill and "$0.056/s at 768P" in skill and "+$0.20/s" in skill
 
 
 def test_take_economics_default_native_with_the_lip_fix_upgrade():
     asset = _read(SPOKE / "asset-director.md")
     assert "### 1a. Take Model Economics (Binding)" in asset
-    assert '`model: "h3max"`' in asset and "lip-fix mode" in asset
+    assert '`model: "h3max-turbo"`' in asset and "lip-fix mode" in asset
     brief = _brief()
-    assert 'The default take model is `"h3max"`' in brief
+    assert 'The default take model is `"h3max-turbo"`' in brief
+    assert "model `h3-max-turbo`, its default" in brief  # and the cutaway clips follow
     assert "lip-fix mode" in brief
 
 
