@@ -75,9 +75,15 @@ Record important findings in:
   Efficiency): the look's starter and what was restyled, the custom scenes, how many
   sheets and renders it took. A compose checkpoint without a passing `kit check` is
   INVALID; when a subagent was used it also carries the delegation record.
-- The final render runs as background Bash while you do LLM-side work (QC notes,
-  RUN_REPORT drafting); collect ONCE when it finishes - no polling. The final export,
-  its verification and settlement stay yours, never a subagent's.
+- The final render may run detached while you do LLM-side work (QC notes, RUN_REPORT
+  drafting):
+  `nohup sh -c 'kit render --name <name>; echo "RENDER EXIT $?"' > work/render.out 2>&1 &`.
+  Collect it ONCE, in one waiting call, never by polling:
+  `until grep -q "RENDER EXIT" work/render.out; do sleep 2; done; cat work/render.out`
+  - and read what it printed: `kit render` verifies the export itself, and an exit
+  other than 0 means there is no video yet. The Bash tool's own background mode is
+  switched off in jobs. The final export, its verification and settlement stay yours,
+  never a subagent's.
 
 ## Common Pitfalls
 

@@ -141,8 +141,14 @@ Rules:
 
 ### Background burst (stage overlap)
 
-At script lock, launch the batch above with `run_in_background` instead of waiting on
-it: one background Bash call for the whole burst, chained inside - TTS first
+At script lock, launch the batch above detached instead of waiting on it. Write the
+whole burst as one script (`work/burst.py`) and start it from a Bash call that returns
+at once:
+`nohup sh -c 'python work/burst.py; echo "BURST EXIT $?"' > work/burst.out 2>&1 &`
+(the shell prints that last line however the script ends, so a crash cannot leave you
+waiting). The Bash tool's own background mode is switched off in jobs, and a foreground
+call would hold the session until the last take lands. One process for the whole
+burst, chained inside - TTS first
 (concurrent, each line saved at `assets/audio/<line id>.mp3`), then `kit voice`, then
 takes / b-roll / music / image concurrently as their inputs land, each writing its
 result JSON and cost-log entries exactly as above. While it cooks, restyle the look
@@ -161,10 +167,12 @@ takes = {part["id"]: {"model": "h3max", "image_path": PORTRAIT, "prompt": PROMPT
          for line in voice["lines"] for part in line["parts"] if part.get("take")}
 ```
 
-Before RUN_REPORT.md: every background task completed, every
-expected output file exists; resubmit only the failed items. Never end the session
-with a background job still running. Never poll it either: launch, work, collect ONCE
-at the stage boundary - repeated status-check calls are wasted turns.
+Before RUN_REPORT.md: the burst has finished, every expected output file exists;
+resubmit only the failed items. Never end the session with a detached process still
+running. Never poll it either: launch, work, collect ONCE at the stage boundary -
+repeated status-check calls are wasted turns. If it is still running when your own
+work is done, wait for it in one call:
+`until grep -q "BURST EXIT" work/burst.out; do sleep 3; done; tail -40 work/burst.out`.
 
 ### Shopping list (Binding)
 

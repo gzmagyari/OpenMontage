@@ -316,14 +316,20 @@ Wall-clock time is a product feature: headless jobs are billed and judged by it.
    node_modules link) - extend it, never rebuild it; only if it is missing, run
    `kit init`.
 5. **Pipeline the stages.** At script lock, fire the whole provider burst as ONE
-   `run_in_background` Bash call (the Parallel Generation pattern, chained: TTS
-   first, concurrently; then `kit voice`; then takes/b-roll/music/image concurrently
-   as their inputs land, each writing its result JSON and cost-log entries). While it
-   cooks, restyle the look and settle the layout against placeholders with
-   `kit sheet --draft`; collect at edit time. Before writing RUN_REPORT.md, verify
-   every background task has completed and every expected output file exists;
-   resubmit only the failed items (their per-item files are idempotent). Never end
-   the session with a background job still running.
+   detached process (the Parallel Generation pattern, chained: TTS first,
+   concurrently; then `kit voice`; then takes/b-roll/music/image concurrently as
+   their inputs land, each writing its result JSON and cost-log entries). Write it as
+   a script and start it from a Bash call that returns at once:
+   `nohup sh -c 'python work/burst.py; echo "BURST EXIT $?"' > work/burst.out 2>&1 &`
+   (the shell prints the last line however the script ends). The Bash tool's own
+   background mode is switched off in jobs, and a foreground call would hold the
+   session until the last take lands. While it cooks, restyle the look and settle the
+   layout against placeholders with `kit sheet --draft`; collect at edit time, and if
+   it is still running then, wait for it in ONE call
+   (`until grep -q "BURST EXIT" work/burst.out; do sleep 3; done`). Before writing
+   RUN_REPORT.md, verify the burst has finished and every expected output file
+   exists; resubmit only the failed items (their per-item files are idempotent).
+   Never end the session with a detached process still running.
 6. **Delegate mechanical work.** See "Delegation (Binding)" just below.
 
 ## Delegation (Binding)

@@ -46,6 +46,27 @@ def test_the_brief_binds_every_job_to_the_kit():
     assert "PREPARED audio" in brief and "`trim_silence` off" in brief
 
 
+def test_the_burst_is_launched_the_way_a_job_can_launch_it():
+    # Jobs run with the Bash tool's background mode off (one continuous turn), so the guide must
+    # not send the director to it. The burst is a detached process the shell starts, and the
+    # shell prints the last line however the script ends, so a crash cannot leave a job waiting.
+    from engine.agent.session import cli_switches
+
+    assert cli_switches()["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+    guide = _read(REPO / "AGENT_GUIDE.md")
+    asset = _read(SPOKE / "asset-director.md")
+    compose = _read(SPOKE / "compose-director.md")
+    for text in (guide, asset, compose):
+        assert "run_in_background" not in text
+        assert "background mode is switched off in jobs" in _flat(text)
+    launch = """nohup sh -c 'python work/burst.py; echo "BURST EXIT $?"' > work/burst.out 2>&1 &"""
+    wait = 'until grep -q "BURST EXIT" work/burst.out; do sleep 3; done'
+    assert launch in guide and launch in asset
+    assert wait in guide and wait in asset
+    assert """nohup sh -c 'kit render --name <name>; echo "RENDER EXIT $?"' > work/render.out 2>&1 &""" in compose
+    assert 'until grep -q "RENDER EXIT" work/render.out; do sleep 2; done' in compose
+
+
 def test_the_kit_reference_covers_videos_without_a_presenter():
     # The reference is all a director has for a request the presenter skills do not cover.
     reference = _flat(_read(REPO / "remotion-composer" / "kit" / "README.md"))
