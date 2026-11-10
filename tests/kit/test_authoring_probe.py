@@ -69,9 +69,13 @@ def test_the_rehearsal_is_the_real_brief_plus_where_to_stop(tmp_path: Path):
     assert prompt.startswith(brief.rstrip())  # nothing of the production brief is changed
     tail = " ".join(prompt[len(brief.rstrip()):].split())
     for phrase in ("exactly the video you would make with the budget above", "every paid tool call is refused",
-                   "`composition/edit.json`", "`kit check --draft` until it passes", "`kit sheet --draft`",
-                   "no render", "REHEARSAL DONE"):
+                   "everything you would do before the first paid call", "while that batch is generating",
+                   "placeholders", "no final render", "REHEARSAL DONE"):
         assert phrase in tail, phrase
+    # It says where the run stops and never how to work: the brief, the guide and the skills
+    # must carry that alone, or the rehearsal would test this paragraph instead of them.
+    for hint in ("edit", "kit", "sheet", "scene", "look", "check --draft"):
+        assert hint not in tail.lower(), hint
 
 
 def test_prompts_come_from_a_file_or_from_two_that_name_no_product(tmp_path: Path):
@@ -128,9 +132,15 @@ def test_a_good_job_passes_and_engine_work_is_named(tmp_path: Path):
     assert facts["look"]["untouched_starter"] is None and facts["look"]["closest_starter"] == stage.DEFAULT_LOOK
     assert facts["look"]["token_lines_changed"] == 2 and facts["look"]["files_changed"] == ["tokens.ts"]
     assert facts["custom_scenes"] == [{"file": "src/scenes/Hook.tsx", "lines": 3, "remotion": ["Img", "spring", "useCurrentFrame"]}]
-    good = {"workspace": facts, "session": {"remotion_by_hand": []}, "check": {"ok": True},
-            "sheets": ["work/kit/sheet.jpg"], "spent_usd": 0.0, "paid_attempts": []}
+    good = {"workspace": facts, "session": {"remotion_by_hand": [], "looked_at_sheet": True}, "check": {"ok": True},
+            "sheets": ["work/kit/sheet.jpg"], "sheets_by_the_director": ["work/kit/sheet.jpg"],
+            "spent_usd": 0.0, "paid_attempts": []}
     assert all(probe.gate(good).values())
+    # A sheet the probe had to make itself still passes the gate, and is reported as such.
+    probe_made = probe.gate({**good, "sheets_by_the_director": []})
+    assert probe_made["a draft sheet renders"] and not probe_made["the director made a draft sheet and looked at it"]
+    assert list(probe_made)[:probe.GATE_KEYS] == ["the director wrote the edit and it passes `kit check --draft`",
+                                                  "no engine code was written", "a draft sheet renders"]
 
     # The engine's work turning up in the job: each kind is named, and the gate closes.
     (comp / "src" / "Root.tsx").write_text("import {Series} from 'remotion';\nexport const R = () => <Series />;\n", encoding="utf-8")
@@ -202,6 +212,7 @@ def test_the_session_is_read_from_the_journal_and_the_transcript(tmp_path: Path)
     assert facts["checks_before_the_first_pass"] == 1
     assert facts["edit_written_s"] == 120 and facts["check_passed_s"] == 205 and facts["sheet_made_s"] == 245
     assert len(facts["remotion_by_hand"]) == 1 and "remotion still" in facts["remotion_by_hand"][0]
+    assert facts["looked_at_sheet"] is True
     assert facts["subagents"] == [{"type": "composer", "what": "write the hook scene"}]
     assert facts["tokens"] == {"input": 40, "output": 9000, "thinking": 2500, "cache_write": 70000,
                                "cache_read": 900000, "web_searches": 1}
@@ -212,6 +223,7 @@ def test_the_session_is_read_from_the_journal_and_the_transcript(tmp_path: Path)
 def test_a_session_that_never_ran_reads_as_empty(tmp_path: Path):
     facts = probe.session_facts(tmp_path / "agent", tmp_path / "project")
     assert facts["tools"] == {} and facts["kit_runs"] == [] and facts["started"] is None and not facts["said_done"]
+    assert facts["looked_at_sheet"] is False
 
 
 def test_the_report_says_what_was_made_and_what_it_took():

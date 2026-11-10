@@ -3,9 +3,12 @@
 
 The kit's tests prove that an edit renders. They cannot prove that the director, handed a prompt
 it has never seen, writes its plan as an edit, restyles the look and stays out of the engine.
-This runs the production session (the same brief, model, effort, box and guide as a paid job) up
-to the point where the first paid call would start, for a few deliberately different prompts,
-and reports what each one produced and what it took: model calls, minutes, model cost.
+This runs the production session (the same brief, model, effort, box and guide as a paid job) as
+far as a run can go without buying anything - everything before the first paid call, then the
+work a real run does while its paid batch generates, against placeholders - for a few
+deliberately different prompts, and reports what each one produced and what it took: model
+calls, minutes, model cost. The prompt only adds where to stop; how to work has to come from
+the brief, the guide and the skills, which is what is being tested.
 
 It costs model calls only. Nothing can be bought:
 
@@ -98,18 +101,19 @@ DEFAULT_PROBES = (
           seconds=15, why="no footage and no voice: type and timing only"),
 )
 
+# Where the run stops, and nothing about how to work: the brief, the guide and the stage skills
+# must carry that on their own, or the rehearsal would be testing this paragraph instead.
 REHEARSAL = """
-## This run is a rehearsal of the planning step
+## This run is a rehearsal
 
-Plan and prepare exactly the video you would make with the budget above, as in a real run. The
-only difference is where the run stops. No paid generation exists in this run (every paid tool
-call is refused), so do not attempt one. Do everything the brief asks up to the point where the
-first paid call would start: the research, the plan file, the exact script,
-`composition/edit.json`, the restyled look and any custom scene the plan calls for, and
-`kit check --draft` until it passes. Then run `kit sheet --draft` (it draws a labelled
-placeholder for every file that does not exist yet), look at the sheet, and fix what it shows in
-the edit or the look. Stop there: no voice, no takes, no images, no music, no render, no exports
-and no RUN_REPORT.md. End with the single line REHEARSAL DONE.
+It goes as far as a real run can go without buying anything, and stops there. Plan and prepare
+exactly the video you would make with the budget above. No paid generation exists in this run
+(every paid tool call is refused), so do not attempt one. Do everything you would do before the
+first paid call. Then, instead of launching the paid batch, carry on with all the work you would
+do while that batch is generating, with placeholders standing in for the files that do not exist
+yet, and check that work the way you would check it in a real run. Stop there: no voice, no
+takes, no images, no music, no final render, no exports and no RUN_REPORT.md. End with the
+single line REHEARSAL DONE.
 """
 
 
@@ -318,8 +322,11 @@ def session_facts(agent_dir: Path, project_dir: Path) -> dict[str, Any]:
     kit_runs, by_hand, writes = [], [], {}
     first: dict[str, float | None] = {"edit_written_s": None, "check_passed_s": None, "sheet_made_s": None}
     project = str(project_dir)
+    looked_at_sheet = False
     for name, tool_input in inputs.values():
         tools[name] = tools.get(name, 0) + 1
+        if name == "Read" and re.search(r"work/kit/sheet\d*\.jpg$", str(tool_input.get("file_path") or "")):
+            looked_at_sheet = True
     for entry in journal:
         if entry.get("kind") != "tool":
             continue
@@ -366,6 +373,7 @@ def session_facts(agent_dir: Path, project_dir: Path) -> dict[str, Any]:
         "checks_before_the_first_pass": next(
             (i for i, run in enumerate([r for r in kit_runs if any(x.startswith("check") for x in r["ran"])]) if run["ok"]), None),
         "remotion_by_hand": by_hand,
+        "looked_at_sheet": looked_at_sheet,
         "writes": dict(sorted(writes.items())),
         "subagents": subagents,
         "api_retries": sum(1 for e in journal if e.get("kind") in {"ratelimit", "system"}),
@@ -394,6 +402,8 @@ def gate(result: dict[str, Any]) -> dict[str, bool]:
                  or session.get("remotion_by_hand")),
         "a draft sheet renders": bool(result.get("sheets")),
         "the look was restyled": bool(work.get("look", {}).get("exists")) and work.get("look", {}).get("untouched_starter") is None,
+        "the director made a draft sheet and looked at it":
+            bool(result.get("sheets_by_the_director")) and bool(session.get("looked_at_sheet")),
         "nothing was bought and nothing paid was attempted":
             not result.get("spent_usd") and not result.get("paid_attempts"),
     }
