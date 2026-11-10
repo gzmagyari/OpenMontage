@@ -191,3 +191,24 @@ def test_take_economics_default_native_with_the_lip_fix_upgrade():
     brief = _brief()
     assert 'The default take model is `"h3max"`' in brief
     assert "lip-fix mode" in brief
+
+
+def test_what_the_first_rehearsal_taught_is_written_down():
+    """Four directors rehearsed against the kit (2026-11-10). Two wrote a word pinned to its
+    line, as the reference says, and the checker refused it; one had its draft sheet crash on a
+    backdrop that was still generating and made stand-in clips at the real paths; both that
+    wrote a custom scene restyled the look first, then sent the composer."""
+    guide = _flat(_read(REPO / "AGENT_GUIDE.md"))
+    assert "is reported as still to write and does not block the lock" in guide
+    assert "after the look, so the scenes can wear it" in guide
+    assert "never make a stand-in file yourself" in guide
+    script = _flat(_read(SPOKE / "script-director.md"))
+    assert "does not block the lock" in script and "so they can wear the look" in script
+    assert "never make a stand-in file yourself" in _flat(_read(SPOKE / "asset-director.md"))
+    reference = _flat(_read(REPO / "remotion-composer" / "kit" / "README.md"))
+    assert '`"line": "C"` (the word as line C says it)' in reference
+    assert "Never put a placeholder file at a real path" in reference
+    assert "The edit can name it before it is written" in reference
+    assert '`archivoBlack` "Archivo Black"' in reference   # the family name tokens.ts needs
+    # The guide's preloaded copy is the reference, word for word.
+    assert reference in guide

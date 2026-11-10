@@ -79,7 +79,9 @@ things are part of locking it:
    with the exact script, what is on screen in order, every cut pinned to a spoken word,
    a line or a second, and every overlay. `kit check --draft` must pass with no errors
    before the lock - it catches a line too long for one take and a cut pinned to a word
-   the script does not contain. A script lock without a passing draft check is INVALID.
+   the script does not contain. A custom scene the plan lists but nobody has written yet
+   is reported as still to write and does not block the lock. A script lock without a
+   passing draft check is INVALID.
 2. **The shopping list.** The locked plan names EVERY paid generation this video will
    buy, each with its exact artifact path: voice lines at `assets/audio/<line id>.mp3`,
    presenter takes at `assets/video/take_<line id>.mp4`, b-roll motions, stills, music.
@@ -87,10 +89,11 @@ things are part of locking it:
    hobby. Default presenter coverage is the hook plus 1-2 body takes; buy more only
    when the prompt or the plan genuinely demands it. The script checkpoint records the
    list (`metadata.shopping_list`); the burst buys exactly this list.
-3. **The one-message spawn.** The next message after the lock fires the whole parallel
-   stage at once - the background provider burst and, when the plan lists custom
-   scenes, `Task composer` - per AGENT_GUIDE -> "Delegation (Binding)". Do not generate
-   assets one by one, do not write composition code, and do not poll the burst.
+3. **The one-message spawn.** The next message after the lock starts the whole provider
+   burst as one detached process. While it cooks come, in this order, the look, then
+   `Task composer` when the plan lists custom scenes (so they can wear the look), then
+   the draft sheet - per AGENT_GUIDE -> "Delegation (Binding)". Do not generate assets
+   one by one, do not write composition code, and do not poll the burst.
 
 ## Common Pitfalls
 

@@ -18,6 +18,11 @@ import {overlaps} from '../engine/zones.ts';
 const KIT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MEDIA_RE = /\.(png|jpe?g|webp|gif|svg|mp4|mov|webm|m4v|mp3|wav|m4a|aac|ogg)$/i;
 const VIDEO_RE = /\.(mp4|mov|webm|m4v)$/i;
+const AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg)$/i;
+// How far the soundtrack's length may differ from the video's before it counts as out of date.
+const MIX_SLACK_SECONDS = 0.15;
+// A file changed this recently may still be on its way in (a draft treats it as not there yet).
+const LANDING_MS = 3000;
 const SHEET_COLUMNS = 6;
 const SHEET_FRAMES = 12;
 const TARGET_LUFS = -14;
@@ -126,6 +131,86 @@ function customScenes() {
   return m[1].split(',').map((s) => s.split(':')[0].replace(/\/\/.*$/gm, '').trim()).filter(Boolean);
 }
 
+/** The known name a misspelt one was probably meant to be (same letters, or one or two off). */
+function nearName(name, known) {
+  const fold = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const distance = (a, b) => {
+    const row = Array.from({length: b.length + 1}, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      let diagonal = row[0];
+      row[0] = i;
+      for (let j = 1; j <= b.length; j++) {
+        const above = row[j];
+        row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+        diagonal = above;
+      }
+    }
+    return row[b.length];
+  };
+  const want = fold(name);
+  return [...known].find((k) => fold(k) === want || (want.length > 4 && distance(fold(k), want) <= 2)) ?? null;
+}
+
+const mtime = (file) => {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return null;
+  }
+};
+
+/** True while a file is, as far as one can tell, still being written: empty, or changed in
+ *  the last few seconds. Only a draft asks. */
+function landing(file) {
+  try {
+    const stat = fs.statSync(file);
+    return stat.size === 0 || Date.now() - stat.mtimeMs < LANDING_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** The soundtrack against the edit it belongs to. A video with a voice or music must have one,
+ *  as long as the video and no older than what it was mixed from; otherwise the export would be
+ *  silent, or its sound would stop or run on at the wrong moment. */
+function soundtrackFindings(edit, resolved, named, pending) {
+  const diags = [];
+  const scripted = (edit.voice?.lines ?? []).length > 0;
+  const music = typeof edit.music?.file === 'string' && edit.music.file.trim() ? edit.music.file : null;
+  if (music && !fs.existsSync(path.join(project, music))) {
+    if (!pending.has(music) && !draft) diags.push({level: 'error', code: 'asset-missing', message: `${music} does not exist.`, where: 'music.file'});
+    pending.add(music);
+  }
+  const mix = resolved.audio.mix;
+  if (!mix) {
+    if ((scripted || music) && !draft) {
+      diags.push({level: 'error', code: 'mix-missing', message: `The edit has ${scripted ? 'a voice' : 'music'} but no soundtrack was built, so the video would be silent. Run \`kit mix\`, then check again.`, where: 'audio'});
+    }
+    return diags;
+  }
+  const file = path.join(project, mix);
+  if (!fs.existsSync(file)) return diags;
+  const seconds = probeDuration(file);
+  const total = resolved.durationInFrames / resolved.fps;
+  const stale = (why) => diags.push({
+    level: named || draft ? 'warning' : 'error',
+    code: 'mix-stale',
+    message: `${why} ${named ? `Rebuild ${mix} to match.` : 'Run `kit mix` again.'}`,
+    where: 'audio',
+  });
+  if (seconds !== undefined && Math.abs(seconds - total) > MIX_SLACK_SECONDS) {
+    stale(`The soundtrack is ${seconds.toFixed(2)} s long but the video is ${total.toFixed(2)} s.`);
+  } else if (!named) {
+    // The kit's own mix: built from the voice timings and the music file as they were then.
+    const made = mtime(file);
+    const voiceAt = scripted ? mtime(path.join(work, 'voice.json')) : null;
+    const musicAt = music ? mtime(path.join(project, music)) : null;
+    if (made !== null && voiceAt !== null && voiceAt > made + 1000) stale('The voice was timed again after the soundtrack was mixed.');
+    else if (made !== null && musicAt !== null && musicAt > made + 1000) stale('The music file changed after the soundtrack was mixed.');
+  }
+  return diags;
+}
+
 /** Everything `check` knows: the resolved timeline and every finding. */
 async function prepare() {
   const editFile = path.join(comp, 'edit.json');
@@ -136,7 +221,7 @@ async function prepare() {
       : `${project} is not a job's project directory (it has no composition/). Run kit there, or pass --project DIR.`);
   }
   const diags = validateEdit(edit);
-  if (diags.some((d) => d.level === 'error')) return {edit, diags, resolved: null, meta: {}};
+  if (diags.some((d) => d.level === 'error')) return {edit, diags, resolved: null, meta: {}, unwritten: []};
 
   const voiceFile = path.join(work, 'voice.json');
   const voice = readJson(voiceFile, 'The voice timings');
@@ -144,17 +229,25 @@ async function prepare() {
 
   // Facts about every file the edit can reach.
   const media = {};
+  const unreadable = [];
   const note = (rel) => {
     if (!rel || media[rel]) return;
     const abs = path.join(project, rel);
-    const exists = fs.existsSync(abs);
-    media[rel] = {exists, duration: exists && VIDEO_RE.test(rel) ? probeDuration(abs) : undefined};
+    let exists = fs.existsSync(abs);
+    const duration = exists && VIDEO_RE.test(rel) ? probeDuration(abs) : undefined;
+    // A draft is made while the paid batch is still writing files: one that is landing right
+    // now, or a clip that cannot be read yet, is still generating, not there.
+    if (exists && draft && (landing(abs) || (VIDEO_RE.test(rel) && duration === undefined))) exists = false;
+    else if (exists && VIDEO_RE.test(rel) && duration === undefined) unreadable.push(rel);
+    media[rel] = {exists, duration: exists ? duration : undefined};
   };
   const lines = (voice ?? estimateVoice(edit)).lines ?? [];
   for (const line of lines) for (const part of line.parts) if (part.take) note(part.take);
   for (const item of edit.main) clipSources(item, (c) => [c.video, c.image, MEDIA_RE.test(c.freeze ?? '') ? c.freeze : null].forEach(note));
   if (edit.audio?.mix) note(edit.audio.mix);
-  // A soundtrack made by `kit mix` is used without being named.
+  // A soundtrack the edit names is the director's own; one made by `kit mix` is used without
+  // being named.
+  const mixNamed = Boolean(edit.audio?.mix);
   if (!edit.audio?.mix) {
     const made = ['assets/audio/mix.wav', 'assets/audio/mix.mp3'].find((rel) => fs.existsSync(path.join(project, rel)));
     if (made) edit.audio = {...(edit.audio ?? {}), mix: made};
@@ -163,38 +256,56 @@ async function prepare() {
 
   const resolved = resolveEdit({edit, voice, media, draft, captionRules: meta.captions});
   diags.push(...resolved.diagnostics);
+  for (const rel of unreadable) diags.push({level: 'error', code: 'asset-unreadable', message: `${rel} cannot be read as a video (it may be incomplete). Generate it again.`, where: rel});
 
   // Files named in props, and scene names.
   const known = new Set([...BUILTIN_SCENES, ...customScenes()]);
   const pending = new Set(resolved.pending);
   const checkProps = (props, where) => {
     for (const rel of propPaths(props)) {
-      if (fs.existsSync(path.join(project, rel))) continue;
+      const abs = path.join(project, rel);
+      if (fs.existsSync(abs) && !(draft && landing(abs))) continue;
       if (!pending.has(rel) && !draft) diags.push({level: 'error', code: 'asset-missing', message: `${rel} does not exist.`, where});
       pending.add(rel);
     }
   };
+  // A scene the edit names but nobody has written yet. In a draft that is work still to do, like
+  // a file still generating (the frame shows a placeholder), so the plan can be checked and
+  // locked before the scene exists; a misspelt name is an error straight away.
+  const unwritten = new Set();
+  const sceneKnown = (name, where) => {
+    if (known.has(name)) return;
+    const meant = nearName(name, known);
+    const has = `ready-made: ${BUILTIN_SCENES.join(', ')}; registered in composition/src/scenes.ts: ${customScenes().join(', ') || 'none'}`;
+    if (meant) diags.push({level: 'error', code: 'scene-unknown', message: `There is no scene "${name}". Did you mean "${meant}"? (${has})`, where});
+    else if (draft) {
+      if (!unwritten.has(name)) diags.push({level: 'warning', code: 'scene-unwritten', message: `Scene "${name}" is not written yet (${has}). A draft shows a placeholder for it; write composition/src/scenes/${name}.tsx and register it before the final check.`, where});
+      unwritten.add(name);
+    } else diags.push({level: 'error', code: 'scene-unknown', message: `Scene "${name}" is neither a ready-made scene nor registered in composition/src/scenes.ts (${has}).`, where});
+  };
   edit.main.forEach((item, i) => clipSources(item, (c) => {
     if (c.scene === undefined) return;
     checkProps(c.props, `main[${i}]`);
-    if (!known.has(c.scene)) diags.push({level: 'error', code: 'scene-unknown', message: `Scene "${c.scene}" is neither a ready-made scene (${BUILTIN_SCENES.join(', ')}) nor registered in composition/src/scenes.ts.`, where: `main[${i}]`});
+    sceneKnown(c.scene, `main[${i}]`);
   }));
   (edit.overlays ?? []).forEach((ov, i) => {
     checkProps(ov.props, `overlays[${i}]`);
     if (ov.card !== undefined && meta.cardZones && !(ov.card in meta.cardZones)) {
       diags.push({level: 'warning', code: 'card-unknown', message: `Card "${ov.card}" is not listed by this look (it has: ${Object.keys(meta.cardZones).join(', ')}). Add it to the look or use one it has.`, where: `overlays[${i}]`});
     }
-    if (ov.scene !== undefined && !known.has(ov.scene)) diags.push({level: 'error', code: 'scene-unknown', message: `Scene "${ov.scene}" is not registered in composition/src/scenes.ts.`, where: `overlays[${i}]`});
+    if (ov.scene !== undefined) sceneKnown(ov.scene, `overlays[${i}]`);
   });
+  diags.push(...soundtrackFindings(edit, resolved, mixNamed, pending));
   resolved.pending = [...pending].sort();
   diags.push(...lintResolved(resolved, edit, meta));
-  return {edit, diags, resolved, meta};
+  return {edit, diags, resolved, meta, unwritten: [...unwritten].sort()};
 }
 
 // ---------------------------------------------------------------- reporting
 
 function report(diags, resolved, extra = {}) {
   const count = (level) => diags.filter((d) => d.level === level).length;
+  const scripted = (prepared?.edit?.voice?.lines ?? []).length > 0;
   const summary = {
     ok: count('error') === 0,
     errors: count('error'),
@@ -203,8 +314,9 @@ function report(diags, resolved, extra = {}) {
     shots: resolved ? resolved.main.length : null,
     overlays: resolved ? resolved.overlays.length : null,
     captions: resolved ? resolved.captions.groups.length : null,
-    voice: resolved ? (resolved.voiceEstimated ? 'estimated from the script' : 'timed') : null,
+    voice: resolved ? (!scripted ? 'none' : resolved.voiceEstimated ? 'estimated from the script' : 'timed') : null,
     pending: resolved ? resolved.pending : [],
+    unwritten: prepared?.unwritten ?? [],
     ...extra,
   };
   fs.mkdirSync(work, {recursive: true});
@@ -217,19 +329,70 @@ function report(diags, resolved, extra = {}) {
     for (const d of diags.filter((x) => x.level === level)) console.log(`${level.toUpperCase().padEnd(7)} ${d.code}${d.where ? ` [${d.where}]` : ''}: ${d.message}`);
   }
   if (resolved) {
-    console.log(`${summary.ok ? 'OK' : 'NOT OK'}: ${summary.seconds} s, ${summary.shots} shots, ${summary.overlays} overlays, ${summary.captions} caption phrases, voice ${summary.voice}; ${summary.errors} error(s), ${summary.warnings} warning(s).`);
+    const voice = summary.voice === 'none' ? 'no voice' : `voice ${summary.voice}`;
+    console.log(`${summary.ok ? 'OK' : 'NOT OK'}: ${summary.seconds} s, ${summary.shots} shots, ${summary.overlays} overlays, ${summary.captions} caption phrases, ${voice}; ${summary.errors} error(s), ${summary.warnings} warning(s).`);
     if (summary.pending.length) console.log(`${draft ? 'Still generating' : 'MISSING'} (${summary.pending.length}): ${summary.pending.join(', ')}`);
+    if (summary.unwritten.length) console.log(`Still to write (${summary.unwritten.length}): ${summary.unwritten.map((name) => `scene ${name}`).join(', ')}`);
   } else console.log(`NOT OK: the edit has ${summary.errors} error(s); fix them and run the check again.`);
   return summary;
 }
 
 // ---------------------------------------------------------------- rendering
 
+/** A hard link (instant, no bytes copied) and, across filesystems, a copy. Remotion's file
+ *  server refuses symlinked files. */
+function place(real, dst) {
+  fs.mkdirSync(path.dirname(dst), {recursive: true});
+  try {
+    fs.linkSync(real, dst);
+  } catch {
+    fs.copyFileSync(real, dst);
+  }
+}
+
+/** Draft only: a stand-in for a file a scene or overlay names in its props while that file is
+ *  still being generated. The engine swaps a missing shot for a placeholder itself, but a scene
+ *  loads its own media, and a file that is not there stops the whole sheet. The stand-in lives
+ *  under work/kit/ and is served from the bundle only: the project's own folders are never
+ *  touched, so every check still counts the real file as missing. Returns its path, or null. */
+function standIn(rel, size) {
+  const ext = path.extname(rel).toLowerCase();
+  const dir = path.join(work, 'standins');
+  const out = path.join(dir, `${crypto.createHash('sha1').update(`${size.width}x${size.height}:${rel}`).digest('hex').slice(0, 16)}${ext}`);
+  if (fs.existsSync(out) && fs.statSync(out).size > 0) return out;
+  fs.mkdirSync(dir, {recursive: true});
+  const run = (args) => spawnSync('ffmpeg', ['-y', '-v', 'error', ...args], {cwd: dir, encoding: 'utf8'}).status === 0 && fs.existsSync(out) && fs.statSync(out).size > 0;
+  const shown = rel.length > 46 ? `...${rel.slice(-43)}` : rel;
+  if (ext === '.svg') {
+    fs.writeFileSync(out, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 960"><rect width="540" height="960" fill="#2a2d34"/><text x="270" y="480" fill="#cfd3da" font-family="DejaVu Sans, sans-serif" font-size="18" text-anchor="middle">waiting for ${shown.replace(/[<&>]/g, '')}</text></svg>`);
+    return out;
+  }
+  if (AUDIO_RE.test(rel)) return run(['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono', '-t', '180', out]) ? out : null;
+  const w = 540;
+  const h = Math.max(2, Math.round((w * size.height) / size.width / 2) * 2);
+  const font = ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/dejavu/DejaVuSans.ttf'].find((f) => fs.existsSync(f));
+  // The words go through a file, so nothing in a path can break the filter's own syntax.
+  fs.writeFileSync(path.join(dir, 'label.txt'), `waiting for ${shown}`);
+  const label = font ? `,drawtext=fontfile=${font}:textfile=label.txt:fontcolor=0xcfd3da:fontsize=18:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.55:boxborderw=14` : '';
+  const picture = `color=c=0x2a2d34:s=${w}x${h}`;
+  if (VIDEO_RE.test(rel)) {
+    // Long enough for any shot, and tiny: two identical frames a second.
+    const made = ext === '.webm'
+      ? run(['-f', 'lavfi', '-i', `${picture}:r=2`, '-t', '180', '-vf', `format=yuv420p${label}`, '-c:v', 'libvpx', '-deadline', 'realtime', '-cpu-used', '8', '-b:v', '120k', out])
+      : run(['-f', 'lavfi', '-i', `${picture}:r=2`, '-t', '180', '-vf', `format=yuv420p${label}`, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-f', 'mp4', out]);
+    return made ? out : null;
+  }
+  if (run(['-f', 'lavfi', '-i', picture, '-vf', `format=rgb24${label}`, '-frames:v', '1', '-update', '1', out])) return out;
+  // A format this ffmpeg cannot write: a PNG under that name still decodes as a picture.
+  return run(['-f', 'lavfi', '-i', picture, '-vf', `format=rgb24${label}`, '-frames:v', '1', '-update', '1', '-f', 'image2', '-c:v', 'png', out]) ? out : null;
+}
+
 function stagePublic(resolved, edit) {
   const pub = path.join(work, 'public');
   fs.rmSync(pub, {recursive: true, force: true});
   fs.mkdirSync(pub, {recursive: true});
   const wanted = new Set();
+  const inProps = new Set();
   const add = (rel) => rel && wanted.add(rel);
   const clip = (c) => {
     add(c.src);
@@ -240,23 +403,32 @@ function stagePublic(resolved, edit) {
   };
   resolved.main.forEach(clip);
   add(resolved.audio.mix);
-  edit.main.forEach((item) => clipSources(item, (c) => propPaths(c.props).forEach(add)));
-  (edit.overlays ?? []).forEach((ov) => propPaths(ov.props).forEach(add));
+  const prop = (rel) => (add(rel), inProps.add(rel));
+  edit.main.forEach((item) => clipSources(item, (c) => propPaths(c.props).forEach(prop)));
+  (edit.overlays ?? []).forEach((ov) => propPaths(ov.props).forEach(prop));
+  const absent = new Set(resolved.pending);
   for (const rel of wanted) {
     const src = path.join(project, rel);
-    if (!fs.existsSync(src)) continue;
     const dst = path.join(pub, rel);
-    fs.mkdirSync(path.dirname(dst), {recursive: true});
-    // Remotion's file server refuses symlinked files, so: a hard link (instant, no bytes
-    // copied) and, across filesystems, a copy.
-    const real = fs.realpathSync(src);
-    try {
-      fs.linkSync(real, dst);
-    } catch {
-      fs.copyFileSync(real, dst);
+    // What the check counted as still generating is not served, even if a file is there by
+    // now: the timeline was resolved without it.
+    if (fs.existsSync(src) && !absent.has(rel)) place(fs.realpathSync(src), dst);
+    else if (draft && inProps.has(rel)) {
+      const stand = standIn(rel, resolved);
+      if (stand) place(stand, dst);
     }
   }
   return pub;
+}
+
+/** What went wrong in the renderer, in a few lines the director can act on. */
+function explain(err) {
+  const text = String(err?.message ?? err);
+  const lines = text.split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('at ') && line !== '---');
+  const hint = /could not be found|status code of 404|Failed to load resource/.test(text)
+    ? ' A scene asked for a file that is not in the project: name media in props by their project-relative path (assets/..., refs/...), so they are staged and checked like any other file.'
+    : '';
+  return `${lines.slice(0, 5).join(' ').slice(0, 900)}${hint}`;
 }
 
 async function openStage(resolved, edit) {
@@ -297,9 +469,37 @@ async function openStage(resolved, edit) {
   process.chdir(comp);
   const browser = await openBrowser('chrome');
   const inputProps = {resolved};
-  const composition = await selectComposition({serveUrl, id: 'Video', inputProps, puppeteerInstance: browser, onBrowserLog});
+  let composition;
+  try {
+    composition = await selectComposition({serveUrl, id: 'Video', inputProps, puppeteerInstance: browser, onBrowserLog, logLevel: 'error'});
+  } catch (err) {
+    await closeBrowser(browser);
+    throw err;
+  }
   lap('open', t);
   return {serveUrl, browser, composition, inputProps, logs, onBrowserLog};
+}
+
+/** The renderer echoes every console line of the page, whatever log level it is given. The
+ *  layout probe's lines are data for this command (they arrive through onBrowserLog), not
+ *  something for its reader, so they are kept out of the output while `run` is at work. */
+async function withoutProbeEcho(run) {
+  const real = console.log;
+  console.log = (...args) => {
+    if (!args.some((arg) => typeof arg === 'string' && arg.includes('KITDIAG'))) real(...args);
+  };
+  try {
+    return await run();
+  } finally {
+    console.log = real;
+  }
+}
+
+/** A browser left open would outlive a failed command. */
+async function closeBrowser(browser) {
+  try {
+    await browser.close({silent: true});
+  } catch {}
 }
 
 function pickFrames(resolved) {
@@ -323,7 +523,7 @@ function pickFrames(resolved) {
   return chosen.sort((a, b) => a - b);
 }
 
-function layoutFindings(logs, resolved) {
+function layoutFindings(logs, resolved, reported = []) {
   const diags = [];
   const seen = new Set();
   const once = (key, d) => !seen.has(key) && (seen.add(key), diags.push(d));
@@ -332,14 +532,26 @@ function layoutFindings(logs, resolved) {
   // column low on the right. The upper part of the frame is free edge to edge.
   const edge = Math.round(W * 0.028);
   const column = {x: W - margin.right, y: Math.round(H * 0.45), w: margin.right, h: H - margin.bottom - Math.round(H * 0.45)};
+  const span = new Map(resolved.overlays.map((o) => [o.id, o]));
+  // An overlay is judged where it rests. Looks fly things in and out through the edges of the
+  // frame on purpose, so the first and last moments of its time on screen are not measured.
+  const fly = Math.round(resolved.fps * 0.4);
+  // A scene the check already named (not written yet in a draft) needs no second finding.
+  const named = new Set(reported.filter((d) => d.code === 'scene-unknown' || d.code === 'scene-unwritten').map((d) => /"([^"]+)"/.exec(d.message)?.[1]));
   for (const log of logs) {
-    if (log.error === 'scene-unknown') once(`s${log.scene}`, {level: 'error', code: 'scene-unknown', message: `Scene "${log.scene}" is not registered (known: ${log.known.join(', ')}).`});
-    else if (log.error === 'card-unknown') once(`c${log.card}`, {level: 'error', code: 'card-unknown', message: `This look has no "${log.card}" card (it has: ${log.known.join(', ')}).`});
+    if (log.error === 'scene-unknown') {
+      if (!named.has(log.scene)) once(`s${log.scene}`, {level: 'error', code: 'scene-unknown', message: `Scene "${log.scene}" is not registered (known: ${log.known.join(', ')}).`});
+    } else if (log.error === 'card-unknown') once(`c${log.card}`, {level: 'error', code: 'card-unknown', message: `This look has no "${log.card}" card (it has: ${log.known.join(', ')}).`});
     else if (log.error === 'browser') once(`b${log.text}`, {level: 'warning', code: 'browser-error', message: log.text});
     if (!log.overlays) continue;
     const at = `${(log.frame / resolved.fps).toFixed(2)} s`;
     for (const o of log.overlays) {
       if (!o.rect || o.zone === 'full') continue;
+      const meant = span.get(o.id);
+      if (meant) {
+        const settle = Math.min(fly, Math.floor((meant.to - meant.from) / 3));
+        if (log.frame < meant.from + settle || log.frame >= meant.to - settle) continue;
+      }
       const r = o.rect;
       const slack = Math.round(H * 0.012);
       const where = r.y < margin.top - slack ? `the top ${margin.top} px the app covers`
@@ -364,12 +576,15 @@ async function sheet(prepared) {
   fs.rmSync(stills, {recursive: true, force: true});
   fs.mkdirSync(stills, {recursive: true});
   let t = Date.now();
-  await Promise.all(frames.map((frame) => renderStill({
-    composition: stage.composition, serveUrl: stage.serveUrl, frame, inputProps: stage.inputProps,
-    output: path.join(stills, `f${String(frame).padStart(5, '0')}.jpeg`), imageFormat: 'jpeg', jpegQuality: 82, scale: 0.33,
-    puppeteerInstance: stage.browser, onBrowserLog: stage.onBrowserLog,
-  })));
-  await stage.browser.close({silent: true});
+  try {
+    await Promise.all(frames.map((frame) => renderStill({
+      composition: stage.composition, serveUrl: stage.serveUrl, frame, inputProps: stage.inputProps,
+      output: path.join(stills, `f${String(frame).padStart(5, '0')}.jpeg`), imageFormat: 'jpeg', jpegQuality: 82, scale: 0.33,
+      puppeteerInstance: stage.browser, onBrowserLog: stage.onBrowserLog, logLevel: 'error',
+    })));
+  } finally {
+    await closeBrowser(stage.browser);
+  }
   lap(`${frames.length} stills`, t);
   const files = fs.readdirSync(stills).sort().map((f) => path.join(stills, f));
   const sheets = [];
@@ -383,7 +598,7 @@ async function sheet(prepared) {
     if (r.status !== 0) fail(`could not build the sheet: ${(r.stderr || '').trim().split('\n').pop()}`);
     sheets.push(out);
   }
-  return {sheets, frames, findings: layoutFindings(stage.logs, resolved)};
+  return {sheets, frames, findings: layoutFindings(stage.logs, resolved, prepared.diags)};
 }
 
 function loudness(file) {
@@ -409,11 +624,14 @@ async function render(prepared) {
   const raw = path.join(renders, `${name}_raw.mp4`);
   const out = path.join(exportsDir, `${name}.mp4`);
   let t = Date.now();
-  await renderMedia({
-    composition: stage.composition, serveUrl: stage.serveUrl, inputProps: stage.inputProps, codec: 'h264', outputLocation: raw,
-    crf: 18, pixelFormat: 'yuv420p', colorSpace: 'bt709', puppeteerInstance: stage.browser, onBrowserLog: stage.onBrowserLog, logLevel: 'error',
-  });
-  await stage.browser.close({silent: true});
+  try {
+    await renderMedia({
+      composition: stage.composition, serveUrl: stage.serveUrl, inputProps: stage.inputProps, codec: 'h264', outputLocation: raw,
+      crf: 18, pixelFormat: 'yuv420p', colorSpace: 'bt709', puppeteerInstance: stage.browser, onBrowserLog: stage.onBrowserLog, logLevel: 'error',
+    });
+  } finally {
+    await closeBrowser(stage.browser);
+  }
   lap('render', t);
   t = Date.now();
   const hasAudio = Boolean(resolved.audio.mix);
@@ -449,7 +667,7 @@ async function render(prepared) {
   const result = {
     file: path.relative(project, out), seconds: +Number(info.format?.duration ?? 0).toFixed(3), bytes: Number(info.format?.size ?? 0),
     video: `${v.codec_name} ${v.width}x${v.height} ${v.pix_fmt} ${v.color_range}/${v.color_space}`, audio: a ? a.codec_name : null,
-    lufs, loudness_corrected: corrected, problems, findings: layoutFindings(stage.logs, resolved),
+    lufs, loudness_corrected: corrected, problems, findings: layoutFindings(stage.logs, resolved, prepared.diags),
   };
   fs.writeFileSync(path.join(renders, 'kit_render.json'), JSON.stringify(result, null, 1));
   return result;
@@ -485,7 +703,12 @@ if (!prepared.resolved || prepared.diags.some((d) => d.level === 'error')) {
 }
 
 if (command === 'sheet') {
-  const made = await sheet(prepared);
+  let made;
+  try {
+    made = await withoutProbeEcho(() => sheet(prepared));
+  } catch (err) {
+    fail(`the sheet could not be made. ${explain(err)}`);
+  }
   const diags = [...prepared.diags, ...made.findings];
   const summary = report(diags, prepared.resolved, {sheets: made.sheets.map((s) => path.relative(project, s)), frames: made.frames});
   console.log(`Sheet${made.sheets.length > 1 ? 's' : ''}: ${made.sheets.map((s) => path.relative(project, s)).join(', ')} (${made.frames.length} frames, ${((Date.now() - started) / 1000).toFixed(1)} s). Look at ${made.sheets.length > 1 ? 'them' : 'it'} before rendering.`);
@@ -497,7 +720,12 @@ if (prepared.resolved.pending.length) {
   console.log('Nothing was rendered: the final render needs every file in place.');
   process.exit(1);
 }
-const result = await render(prepared);
+let result;
+try {
+  result = await withoutProbeEcho(() => render(prepared));
+} catch (err) {
+  fail(`the video could not be rendered. ${explain(err)}`);
+}
 report([...prepared.diags, ...result.findings], prepared.resolved, {export: result});
 if (result.problems.length) {
   console.log(`EXPORT PROBLEMS: ${result.problems.join('; ')}`);

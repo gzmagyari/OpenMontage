@@ -278,6 +278,8 @@ def test_a_small_video_from_init_to_export(tmp_path: Path):
     sheet = _kit(project, "sheet")
     assert sheet.returncode == 0, sheet.stdout + sheet.stderr
     assert (project / "work/kit/sheet.jpg").is_file()
+    # The layout probe talks to the command, not to whoever reads its output.
+    assert "KITDIAG" not in sheet.stdout + sheet.stderr
 
     rendered = _kit(project, "render", "--name", "smoke")
     assert rendered.returncode == 0, rendered.stdout + rendered.stderr
@@ -288,3 +290,85 @@ def test_a_small_video_from_init_to_export(tmp_path: Path):
     assert (video["codec_name"], video["width"], video["height"], video["color_space"]) == ("h264", 540, 960, "bt709")
     assert any(s["codec_type"] == "audio" for s in probe["streams"])
     assert float(probe["format"]["duration"]) == pytest.approx(voice.duration_of(project / "assets/audio/voice_A.wav") + 1.0, abs=0.2)
+
+
+@pytest.mark.skipif(not CAN_RENDER, reason="needs the image's Chrome and Node modules (Linux)")
+def test_a_draft_holds_up_while_files_and_scenes_are_still_being_made(tmp_path: Path):
+    """A real run sheets its layout while the paid batch is still generating: pictures and clips
+    that scenes take in their props do not exist yet, and neither does a scene someone is still
+    writing. The draft must show placeholders for all of them and put nothing at a real path."""
+    project = tmp_path
+    assert _kit(project, "init", "--look", "pop").returncode == 0
+    edit = {
+        "canvas": {"size": "540x960", "fps": 30, "safe": "tiktok"},
+        "music": {"file": "assets/audio/music.mp3"},
+        "captions": {"enabled": False},
+        "main": [
+            {"scene": "KineticText", "props": {"text": "Closed\nSaturday", "backdrop": {"video": "assets/video/shop.mp4", "dim": 0.4}}, "for": 2},
+            {"scene": "BeforeAfter", "props": {"pair": "refs/room"}, "for": 2, "enter": "punch"},
+            {"scene": "Stamp", "props": {"word": "10 AM", "backdrop": "assets/images/door.png"}, "for": 2},
+        ],
+        "overlays": [{"tag": "soon", "from": 0.4, "for": 1.2}],
+    }
+    edit_file = project / "composition" / "edit.json"
+    edit_file.write_text(json.dumps(edit), encoding="utf-8")
+    missing = ["assets/audio/music.mp3", "assets/images/door.png", "assets/video/shop.mp4", "refs/room_after.jpg", "refs/room_before.jpg"]
+
+    draft = _kit(project, "check", "--draft")
+    assert draft.returncode == 0, draft.stdout + draft.stderr
+    assert f"Still generating (5): {', '.join(missing)}" in draft.stdout
+    assert "Still to write (1): scene Stamp" in draft.stdout and "scene-unwritten" in draft.stdout
+    assert "no voice" in draft.stdout
+
+    sheet = _kit(project, "sheet", "--draft")
+    assert sheet.returncode == 0, sheet.stdout + sheet.stderr
+    assert (project / "work/kit/sheet.jpg").is_file()
+    assert "KITDIAG" not in sheet.stdout + sheet.stderr
+    # The stand-ins live in the bundle only: nothing was put where the real files belong.
+    assert not any((project / rel).exists() for rel in missing)
+    assert (project / "work/kit/public/assets/video/shop.mp4").is_file()
+
+    final = _kit(project, "check", "--allow-starter-look")
+    assert final.returncode == 1
+    assert "MISSING (5)" in final.stdout and "scene-unknown" in final.stdout and "asset-missing" in final.stdout
+    refused = _kit(project, "render", "--allow-starter-look")
+    assert refused.returncode == 1 and "Nothing was rendered" in refused.stdout
+    assert not list((project / "exports").glob("*.mp4"))
+
+    # A misspelt ready-made scene is not "still to write": it is an error straight away.
+    edit["main"][0]["scene"] = "KineticTxt"
+    edit_file.write_text(json.dumps(edit), encoding="utf-8")
+    typo = _kit(project, "check", "--draft")
+    assert typo.returncode == 1 and 'Did you mean "KineticText"?' in typo.stdout
+
+
+@pytest.mark.skipif(not CAN_RENDER, reason="needs the image's Chrome and Node modules (Linux)")
+def test_the_final_check_wants_a_soundtrack_that_fits_the_video(tmp_path: Path):
+    project = tmp_path
+    assert _kit(project, "init", "--look", "pop").returncode == 0
+    (project / "assets" / "audio").mkdir(parents=True)
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=220:duration=8", str(project / "assets/audio/music.wav"))
+    edit = {"canvas": {"size": "540x960", "fps": 30, "safe": "tiktok"}, "music": {"file": "assets/audio/music.wav"},
+            "captions": {"enabled": False}, "main": [{"color": "#203040", "for": 3}]}
+    edit_file = project / "composition" / "edit.json"
+    edit_file.write_text(json.dumps(edit), encoding="utf-8")
+
+    def final() -> subprocess.CompletedProcess:
+        return _kit(project, "check", "--allow-starter-look")
+
+    # Music is named but `kit mix` never ran: the export would be silent.
+    silent = final()
+    assert silent.returncode == 1 and "mix-missing" in silent.stdout
+    assert _kit(project, "check", "--draft").returncode == 0  # a draft does not ask for it yet
+    assert _kit(project, "mix").returncode == 0
+    assert final().returncode == 0, final().stdout
+
+    # The video gets longer after the mix: the sound would stop two seconds early.
+    edit["main"][0]["for"] = 5
+    edit_file.write_text(json.dumps(edit), encoding="utf-8")
+    stale = final()
+    assert stale.returncode == 1 and "mix-stale" in stale.stdout and "kit mix" in stale.stdout
+    drafted = _kit(project, "check", "--draft")
+    assert drafted.returncode == 0 and "mix-stale" in drafted.stdout  # a warning there
+    assert _kit(project, "mix").returncode == 0
+    assert final().returncode == 0, final().stdout

@@ -32,10 +32,15 @@ work/kit/            voice.json, check.json, sheet.jpg, the bundle (all generate
 | `kit init [--look NAME]` | Stage `composition/`. Never overwrites what is there. |
 | `kit look [NAME] [--force]` | List the starter looks, or copy one into the job. |
 | `kit voice` | After the lines are spoken: tighten each recording, time every word of the script, split a line that is too long for one take, lay the lines end to end. |
-| `kit check [--draft]` | Check the edit, the timeline and the look. `--draft` accepts files that are still generating. |
+| `kit check [--draft]` | Check the edit, the timeline and the look. `--draft` accepts files that are still generating and scenes that are not written yet. |
 | `kit sheet [--draft]` | One sheet of the telling frames (about 8 s), plus layout findings measured in the browser. |
-| `kit mix` | The soundtrack: voice on the spine, music under it (or the music alone when there is no voice), cut to the video's length and faded out, -14 LUFS. |
-| `kit render [--name NAME]` | The final video in `exports/`, tagged BT.709, verified. Refuses while anything is missing. |
+| `kit mix` | The soundtrack: voice on the spine, music under it (or the music alone when there is no voice), cut to the video's length and faded out, -14 LUFS. Run it again after anything that changes the video's length, the voice or the music. |
+| `kit render [--name NAME]` | The final video in `exports/`, tagged BT.709, verified. Refuses while anything is missing, the soundtrack included. |
+
+A draft never needs a stand-in made by hand: `check --draft` lists what is still missing
+("Still generating", "Still to write") and `sheet --draft` shows a "waiting for ..." frame in
+its place, also for a picture or clip that a scene takes in its props. Never put a placeholder
+file at a real path: the final check would take it for the real thing.
 
 Recordings are found at `assets/audio/<line id>.mp3` (or `.wav`), or wherever the line's
 `audio` says. `kit voice` writes `assets/audio/voice_<part>.wav`: generate each take from
@@ -77,7 +82,7 @@ Anywhere a time is wanted:
 | Form | Means |
 |---|---|
 | `3.5` or `{"t": 3.5}` | seconds from the start |
-| `{"word": "rebuilds"}` | the next time the voice says it (a short phrase works too). In `main`, "next" counts from where the item starts; in overlays, from the start of the video. Add `"line"`, `"nth"` or `"edge": "end"` to pick. |
+| `{"word": "rebuilds"}` | the next time the voice says it (a short phrase works too). In `main`, "next" counts from where the item starts; in overlays, from the start of the video. To pick: `"line": "C"` (the word as line C says it), `"nth": 2` (the second time), `"edge": "end"` (where the word ends). |
 | `{"line": "B"}` | the start of line B (`"edge": "end"` for its end) |
 | `{"voice": "end"}` | where the last line ends |
 | `{"item": "m3"}` | the start of a main item (by `id`, or `m<n>` by position) |
@@ -150,14 +155,15 @@ Keep those names when restyling; add whatever else the look needs.
 
 Fonts. The kit ships eleven families, loaded from local files (no network): call the one a
 look uses once at the top of the look and use the name it returns, for example
-`const FONT = fonts.anton();` with `fonts` from `@kit/engine`.
+`const FONT = fonts.anton();` with `fonts` from `@kit/engine`. The name it returns is the
+family name below, which is also what goes in `tokens.ts` (that file cannot call anything).
 
-| | |
+| | call, and the family name it returns |
 |---|---|
-| Heavy display | `anton`, `archivoBlack`, `bebasNeue` |
-| Sans, any weight | `inter`, `montserrat`, `poppins` (500, 700, 800, 900), `spaceGrotesk` |
-| Serif | `dmSerifDisplay`, `playfair`, `playfairItalic` |
-| Handwritten | `caveat` |
+| Heavy display | `anton` "Anton", `archivoBlack` "Archivo Black", `bebasNeue` "Bebas Neue" |
+| Sans, any weight | `inter` "Inter", `montserrat` "Montserrat", `poppins` "Poppins" (500, 700, 800, 900), `spaceGrotesk` "Space Grotesk" |
+| Serif | `dmSerifDisplay` "DM Serif Display", `playfair` and `playfairItalic` "Playfair Display" |
+| Handwritten | `caveat` "Caveat" |
 
 Installed on the render box and usable by name without loading: DejaVu Sans / Serif / Mono,
 Noto Sans, Noto Sans Display, Noto Serif, Noto Serif Display (regular and bold), and the Noto
@@ -208,7 +214,9 @@ export const Orbit: React.FC<{image: string}> = ({image}) => {
 ```
 
 Register it in `src/scenes.ts` (`export const scenes = {Orbit};`) and name it in the edit.
-Media paths in props are project-relative and are staged and checked like any other file.
+The edit can name it before it is written: a draft counts it as still to write and shows a
+placeholder, so the plan does not wait for the code. Media paths in props are
+project-relative and are staged and checked like any other file.
 `useDress()` gives the look's colours, type and surface style, `surface(d)` a card in the
 look's manner, `Backdrop` what sits behind. A scene must never be empty on its first frame
 (a video's first frame has to work on its own): start its entrance `HEAD_START` frames in,
@@ -218,10 +226,12 @@ as the ready-made scenes do.
 
 Shape of the edit; words that are not in the script (with close matches); moments that fall
 before the item starts; lines too long for one take (estimated before any voice is bought);
-missing files; frames with nothing on screen; shots under 12 frames; text on screen too
-briefly to read; overlays sharing a zone or sitting in the caption zone; colour pairs that
-are hard to read; a look that was never restyled; and, measured on the sheet's frames,
-overlays that reach into what the app covers or over the captions.
+missing files; scenes that are misspelt or not written; frames with nothing on screen; shots
+under 12 frames; text on screen too briefly to read; overlays sharing a zone or sitting in
+the caption zone; colour pairs that are hard to read; a look that was never restyled; a
+soundtrack that is missing, or older or of another length than the video it belongs to; and,
+measured on the sheet's frames, overlays that come to rest in what the app covers or over
+the captions (the moments an overlay flies in or out are not judged).
 
 ## Tests
 

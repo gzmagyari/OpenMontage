@@ -152,8 +152,9 @@ burst, chained inside - TTS first
 (concurrent, each line saved at `assets/audio/<line id>.mp3`), then `kit voice`, then
 takes / b-roll / music / image concurrently as their inputs land, each writing its
 result JSON and cost-log entries exactly as above. While it cooks, restyle the look
-and settle the layout against placeholders with `kit sheet --draft`; collect the
-results at edit time.
+and settle the layout with `kit sheet --draft`: it shows a waiting frame for whatever
+is still generating, so never make a stand-in file yourself (one left at a real path
+would pass for the real thing). Collect the results at edit time.
 
 Inside the burst, the takes to film come from `kit voice`, not from the script: it may have
 split a long line into two takes, and it names the prepared audio and the take path of each.

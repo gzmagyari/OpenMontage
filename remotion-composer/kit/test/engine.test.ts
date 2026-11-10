@@ -136,6 +136,27 @@ test('a word spoken only before the cut is reported as such', () => {
   assert.ok(d && /before this point/.test(d.message));
 });
 
+test('a word can be pinned to the line it is spoken in', () => {
+  // "it" is spoken in line B (6 s) and again in line C (14 s).
+  const e = edit({overlays: [{tag: 'in C', from: {word: 'it', line: 'C'}, for: 1}, {tag: 'first', from: {word: 'it'}, for: 1}]});
+  assert.deepEqual(validateEdit(e), []);
+  const r = resolveEdit({edit: e, voice: voice()});
+  assert.deepEqual(errors(r.diagnostics), []);
+  assert.deepEqual(r.overlays.map((o) => o.from), [420, 180]);
+  // Only the unpinned one is ambiguous.
+  assert.deepEqual(r.diagnostics.filter((d) => d.code === 'anchor-ambiguous').map((d) => d.where), ['overlays[1].from']);
+  // In the main sequence too, with the end of the word (14.4 s).
+  const cut = edit({main: [{take: 'A'}, {take: 'B', until: {word: 'it', line: 'C', edge: 'end'}}, {take: 'C'}], overlays: []});
+  assert.deepEqual(validateEdit(cut), []);
+  const shown = resolveEdit({edit: cut, voice: voice()}).main.filter((m) => m.id.startsWith('m2'));
+  assert.equal(shown[shown.length - 1].to, 432);
+  // Two moments at once are still refused, and so is a line that does not exist.
+  const bad = (until: unknown) => validateEdit({...edit(), main: [{video: 'a.mp4', until}]}).some((d) => d.code === 'anchor-invalid');
+  assert.ok(bad({word: 'it', t: 3}));
+  assert.ok(bad({line: 'C', voice: 'end'}));
+  assert.ok(bad({word: 'it', line: 'Q'}));
+});
+
 test('seconds, line ends and the end of the voice are moments too', () => {
   const e = edit({main: [{color: '#000', until: 1.5}, {take: 'A', until: {line: 'A', edge: 'end'}}, {take: 'B', until: {voice: 'end', offset: -3}}, {take: 'C'}], overlays: [{text: 'hi', from: 0.5, for: 1}, {tag: 'late', from: {end: true, offset: -1}}]});
   const r = resolveEdit({edit: e, voice: voice()});

@@ -79,8 +79,9 @@ export function validateEdit(edit: unknown): Diag[] {
       return;
     }
     if (!isObj(value)) return err(where, 'A moment is a number of seconds or one of {"word"}, {"line"}, {"voice"}, {"item"}, {"t"}, {"end": true}.', 'anchor-invalid');
-    const kinds = ANCHOR_KINDS.filter((k) => value[k] !== undefined);
-    if (kinds.length !== 1) return err(where, `A moment names exactly one of: ${ANCHOR_KINDS.join(', ')}.`, 'anchor-invalid');
+    // Beside "word", "line" is not a second moment: it says in which line the word is meant.
+    const kinds = ANCHOR_KINDS.filter((k) => value[k] !== undefined && !(k === 'line' && value.word !== undefined));
+    if (kinds.length !== 1) return err(where, `A moment names exactly one of: ${ANCHOR_KINDS.join(', ')} ("line" may also go with "word", to say which line's word is meant).`, 'anchor-invalid');
     const kind = kinds[0];
     if (kind === 't' && (!isNum(value.t) || value.t < 0)) err(where, '"t" must be a time in seconds.', 'anchor-invalid');
     if (kind === 'word' && !isStr(value.word)) err(where, '"word" must be a word or short phrase from the script.', 'anchor-invalid');

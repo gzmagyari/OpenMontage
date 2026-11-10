@@ -16,6 +16,7 @@ import difflib
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
 import unicodedata
@@ -337,7 +338,11 @@ def prepare(project: Path, *, transcribe: Transcribe | None = None, model_size: 
         result.append({"id": line_id, "text": text, "source": source, "parts": parts_out})
 
     voice = {"lines": result, "voice_end": round(cursor - gap, 3), "notes": notes}
-    (work / "voice.json").write_text(json.dumps(voice, indent=1, ensure_ascii=False), encoding="utf-8")
+    # Written whole or not at all: a draft check may read the timings while the batch that
+    # runs this command is still at work.
+    fresh = work / "voice.json.new"
+    fresh.write_text(json.dumps(voice, indent=1, ensure_ascii=False), encoding="utf-8")
+    os.replace(fresh, work / "voice.json")
     return voice
 
 
