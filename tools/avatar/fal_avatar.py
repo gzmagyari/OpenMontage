@@ -305,6 +305,12 @@ class FalAvatar(BaseTool):
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         seconds = self._audio_seconds(inputs)
         if seconds is None:
+            audio_path = inputs.get("audio_path")
+            if audio_path and not Path(audio_path).exists():
+                # A missing file is not a question of price. Said as one, the caller is told the
+                # tool "cannot quote" and goes looking for a pricing problem; said plainly, the
+                # call goes on and fails on the file, by name, before anything is spent.
+                raise FileNotFoundError(f"audio file not found: {audio_path}")
             raise PriceQuoteRequired(
                 "Billing follows the audio length; pass audio_duration_seconds (or a local audio_path) to estimate"
             )

@@ -7,10 +7,13 @@ one real session on the production options, about $0.01 of Haiku and no paid too
 
   1. a 130-second command, past the CLI's stock 120 s Bash limit;
   2. the real fal_avatar called the way the agent calls it, on a budget below its quote;
-  3. one more Bash call, which is the call that used to be refused after a background move.
+  3. the same tool priced from a file in the job's folder, named the way `kit voice` lists a
+     take's audio (relative to the project): the desk quotes the call in its own process, and
+     once looked for such a file in the repository and refused the take as having no price;
+  4. one more Bash call, which is the call that used to be refused after a background move.
 
-  4. WebFetch on a public page, through the box's web proxy;
-  5. the paid batch's launch and collection, word for word as the guide gives them (Latency
+  5. WebFetch on a public page, through the box's web proxy;
+  6. the paid batch's launch and collection, word for word as the guide gives them (Latency
      rule 5), with a six-second stand-in for the batch: a detached process started from a call
      that returns at once, then one call that waits for the line the shell prints at its end.
      The Bash tool's own background mode is switched off in jobs, so this is the only way a
@@ -18,8 +21,9 @@ one real session on the production options, about $0.01 of Haiku and no paid too
 
 The session runs in a job's box (engine/sandbox/), as every production job does. It passes when the
 job stayed one continuous turn, nothing moved to the background or was refused, the budget denied
-the paid call at the desk, WebFetch reached the page, the detached batch started without holding
-its call and was collected by one waiting call, and only the allowed tools were offered.
+the paid call at the desk, the take named by a path inside the job was quoted before it was denied,
+WebFetch reached the page, the detached batch started without holding its call and was collected by
+one waiting call, and only the allowed tools were offered.
 Run scripts/agent_box_check.py first: it checks the box itself, at no cost.
 
     docker exec -w /app openmontage-api python scripts/agent_session_smoke.py
@@ -30,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -51,6 +56,23 @@ AVATAR_CALL = (
     "r=t.execute({'model':'h3max-acting','image_path':'no_such_portrait.png','audio_duration_seconds':10,"
     "'output_path':'/tmp/agent_session_smoke.mp4'}); print(r.success); print(r.error)\""
 )
+# A take priced from its audio, the path given as `kit voice` lists it: relative to the project.
+# Twelve seconds of tone is a 13-second plate, $0.73 at 768P: above the budget, so the desk denies
+# it once it has found the file and quoted it. Nothing is bought.
+TAKE_SECONDS = 12
+TAKE_QUOTE_USD = 0.728
+TAKE_AUDIO = "assets/audio/voice_A.wav"
+# Put in the project before the session starts, so the step the session runs is one short line.
+TAKE_SCRIPT = f"""import sys
+sys.path.insert(0, {str(REPO_ROOT)!r})
+from tools.tool_registry import registry
+registry.discover()
+result = registry._tools["fal_avatar"].execute({{
+    "model": "h3max", "image_path": "no_such_portrait.png",
+    "audio_path": {TAKE_AUDIO!r}, "output_path": "assets/video/take_A.mp4"}})
+print("TAKE CALL ANSWERED", result.success)
+print(result.error)
+"""
 BATCH_SECONDS = 6
 # AGENT_GUIDE.md, Latency rule 5, word for word (a test keeps the two the same).
 BATCH_LAUNCH = "nohup sh -c 'python work/burst.py; echo \"BURST EXIT $?\"' > work/burst.out 2>&1 &"
@@ -64,10 +86,11 @@ def prompt(project: Path) -> str:
         "with no timeout parameter, and do nothing else.\n"
         "1. python -c \"import time; time.sleep(130); print('finished')\"\n"
         f"2. {AVATAR_CALL}\n"
-        "3. ls /tmp | head -2\n"
-        "4. Use the WebFetch tool on https://example.com and report the page title.\n"
-        f"5. cd {project} && mkdir -p work && echo \"{stand_in}\" > work/burst.py; {BATCH_LAUNCH}\n"
-        f"6. cd {project} && {BATCH_WAIT}; cat work/burst.out\n"
+        f"3. cd {project} && python take_check.py\n"
+        "4. ls /tmp | head -2\n"
+        "5. Use the WebFetch tool on https://example.com and report the page title.\n"
+        f"6. cd {project} && mkdir -p work && echo \"{stand_in}\" > work/burst.py; {BATCH_LAUNCH}\n"
+        f"7. cd {project} && {BATCH_WAIT}; cat work/burst.out\n"
         "Then reply with the word DONE."
     )
 
@@ -81,6 +104,10 @@ async def run() -> int:
     work = Path(tempfile.mkdtemp(prefix="agent_session_smoke_", dir=os.environ.get("OPENMONTAGE_DATA_DIR") or "/data"))
     project = work / "projects" / "job_smoke"
     project.mkdir(parents=True)
+    (project / TAKE_AUDIO).parent.mkdir(parents=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    f"sine=frequency=330:duration={TAKE_SECONDS}", str(project / TAKE_AUDIO)], check=True)
+    (project / "take_check.py").write_text(TAKE_SCRIPT, encoding="utf-8")
     job_ledger.write_budget(work, BUDGET_USD)
     results: list[str] = []
     turns = 0
@@ -115,7 +142,7 @@ async def run() -> int:
                 journal_path=work / "journal.jsonl",
                 transcript_path=work / "transcript.jsonl",
                 model="claude-haiku-5-5",
-                max_turns=18,
+                max_turns=20,
                 max_claude_usd=0.30,
                 on_event=on_event,
                 on_message=on_message,
@@ -138,7 +165,11 @@ async def run() -> int:
         "nothing was refused": "doesn't want to take this action" not in text,
         "the slow command finished in the foreground": "finished" in text,
         "the budget denied the paid call at the desk": "PAID-GENERATION BUDGET REACHED" in text
-        and [d.get("tool") for d in denials] == ["fal_avatar"],
+        and [d.get("tool") for d in denials] == ["fal_avatar", "fal_avatar"],
+        # Quoted from the file in the job's folder, so denied by the budget and not as "no price".
+        "a take named by a path inside the job was quoted, then denied": "TAKE CALL ANSWERED False" in text
+        and len(denials) == 2 and denials[1].get("reason") != "unpriced" and "NO PRICE FOR THIS CALL" not in text
+        and abs(float(denials[1].get("estimate_usd") or 0.0) - TAKE_QUOTE_USD) < 0.001,
         "WebFetch reached the page through the web proxy": "example.com" in fetched and "Example Domain" in text,
         # Well under the stand-in batch's own length: the call returned while the batch ran on.
         "the detached batch started without holding its call": len(launch_seconds) == 1 and launch_seconds[0] < BATCH_SECONDS - 2,

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -178,6 +179,76 @@ def test_a_paid_call_that_never_finishes_still_counts_at_its_estimate(desk, tmp_
     answer = asyncio.run(desk._run({"tool": "fake_paid", "inputs": {"output_path": "a.mp4"}}))
     assert not answer["success"] and "did not finish" in answer["error"]
     assert job_ledger.summarize(job_ledger.read_entries(tmp_path)).spent_usd == 0.5
+
+
+class _FilePricedTool:
+    """Priced by a file it is given, as a take is by its audio: no file, no price."""
+    name = "fake_take"
+    provider = "fake"
+    runtime = ToolRuntime.API
+
+    def estimate_cost(self, inputs):
+        from tools.provider_pricing import PriceQuoteRequired
+
+        paths = [inputs.get("audio_path"), *(inputs.get("image_paths") or [])]
+        files = [Path(p) for p in paths if p]
+        if not files or not all(f.is_file() for f in files):
+            raise PriceQuoteRequired("nothing to price")
+        return round(sum(len(f.read_bytes()) for f in files) / 1000, 3)
+
+
+@pytest.fixture()
+def take_desk(desk, tmp_path, monkeypatch):
+    tools = {"fake_take": _FilePricedTool()}
+    monkeypatch.setattr(desk_module, "_tool_registry", lambda: type("R", (), {"get": staticmethod(tools.get)})())
+    project = tmp_path / "p"
+    (project / "assets" / "audio").mkdir(parents=True)
+    (project / "work").mkdir()
+    (project / "assets" / "audio" / "voice_A.wav").write_bytes(b"a" * 400)
+    (tmp_path / "t").mkdir()
+    (tmp_path / "t" / "line.wav").write_bytes(b"b" * 300)
+    (tmp_path / "t" / "ref.png").write_bytes(b"c" * 100)
+    job_ledger.write_budget(tmp_path, 5.0)
+    return desk
+
+
+def test_the_desk_quotes_a_call_where_the_job_keeps_its_files(take_desk, tmp_path):
+    """The quote is made in the API process, the tool runs in the job's folder. `kit voice` lists
+    a take's audio relative to the project; a batch passed it as listed, and the desk looked for
+    it in the repository: four takes of video 716 were refused with "no price for this call"."""
+    desk, project = take_desk, tmp_path / "p"
+    given = {"audio_path": "assets/audio/voice_A.wav", "output_path": "assets/video/take_A.mp4"}
+    answer = asyncio.run(desk._run({"tool": "fake_take", "inputs": given, "cwd": str(project)}))
+    assert answer["success"], answer
+    assert desk.ran == [("fake_take", given)]  # the tool runs with the paths as the job gave them
+    started = job_ledger.read_entries(tmp_path)[0]
+    assert started["event"] == "start" and started["estimate_usd"] == 0.4
+    # The same from a subfolder of the project, and with the absolute path.
+    for inputs, cwd in (({"audio_path": "../assets/audio/voice_A.wav"}, str(project / "work")),
+                        ({"audio_path": str(project / "assets" / "audio" / "voice_A.wav")}, "")):
+        assert asyncio.run(desk._run({"tool": "fake_take", "inputs": inputs, "cwd": cwd}))["success"], inputs
+
+
+def test_the_desk_reads_the_boxs_tmp_where_it_really_is(take_desk, tmp_path):
+    # Inside the box /tmp is the job's own temp folder; for the desk it is another folder.
+    desk = take_desk
+    inputs = {"audio_path": "/tmp/line.wav", "image_paths": ["/tmp/ref.png"]}
+    answer = asyncio.run(desk._run({"tool": "fake_take", "inputs": inputs, "cwd": "/tmp"}))
+    assert answer["success"], answer
+    assert job_ledger.read_entries(tmp_path)[0]["estimate_usd"] == 0.4  # 300 + 100 bytes
+    seen = desk._as_seen_from_here({"audio_path": "line.wav", "image_url": "https://example.com/a.png",
+                                    "prompt": "a/b", "image_paths": ["/tmp/ref.png"], "duration": 5}, "/tmp")
+    assert seen == {"audio_path": str(tmp_path / "t" / "line.wav"), "image_url": "https://example.com/a.png",
+                    "prompt": "a/b", "image_paths": [str(tmp_path / "t" / "ref.png")], "duration": 5}
+
+
+def test_a_file_that_is_not_there_is_still_refused(take_desk, tmp_path):
+    desk, project = take_desk, tmp_path / "p"
+    for inputs, cwd in (({"audio_path": "assets/audio/voice_Z.wav"}, str(project)),
+                        ({"audio_path": "assets/audio/voice_A.wav"}, "/etc")):  # not a folder of the job
+        answer = asyncio.run(desk._run({"tool": "fake_take", "inputs": inputs, "cwd": cwd}))
+        assert not answer["success"] and "NO PRICE FOR THIS CALL" in answer["error"], inputs
+    assert desk.ran == []
 
 
 def test_a_local_tool_is_noted_for_the_stage_at_no_cost(desk, tmp_path):

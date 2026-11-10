@@ -150,13 +150,14 @@ class ToolDesk:
         except AddressRefused as exc:
             return _failed(f"{name} was not run: an input URL is not allowed ({exc}). Only public "
                            "internet addresses can be used.")
-        estimate_usd, unpriced = _budget_quote(tool, inputs)
+        cwd = str(request.get("cwd") or "")
+        estimate_usd, unpriced = _budget_quote(tool, self._as_seen_from_here(inputs, cwd))
         call = job_ledger.begin_call(self.ledger_dir, tool=name, provider=getattr(tool, "provider", None),
                                      inputs=inputs, estimate_usd=estimate_usd, unpriced=unpriced)
         if call.denied:
             return _failed(call.denied)
         self.calls += 1
-        result = await self._in_provider_box(tool, inputs, str(request.get("cwd") or ""))
+        result = await self._in_provider_box(tool, inputs, cwd)
         if result is None:
             return _failed(f"{name} did not finish (timed out or stopped). If the provider finished the "
                            "work it is still counted; do not repeat the call blindly.")
@@ -167,6 +168,39 @@ class ToolDesk:
                                success=result.get("success"),
                                request_ids=data.get("request_ids") if isinstance(data, dict) else None)
         return result
+
+    def _as_seen_from_here(self, inputs: dict[str, Any], cwd: str) -> dict[str, Any]:
+        """The call's inputs with each local path spelled so that THIS process finds the file.
+
+        A call's price can hang on a file it is given: a take is priced by the length of its
+        audio. The tool itself runs in a provider box whose working folder is the job's and
+        whose /tmp is the agent box's temp folder, but the price is quoted here, in the API
+        process, where a path relative to the job's folder points into the repository and
+        one under /tmp at this container's own. `kit voice` lists a take's audio relative to
+        the project; a batch passed it as listed, and four takes of video 716 were refused
+        with "no price for this call" while the files sat where the job had said.
+
+        Only the quote reads this copy. The tool runs with the inputs as given."""
+        base = Path(self._cwd(cwd))
+
+        def here(value: Any) -> Any:
+            if not isinstance(value, str) or not value or "://" in value:
+                return value
+            path = Path(value)
+            if not path.is_absolute():
+                path = base / path
+            # The project is the same folder for every process; only /tmp is the box's own.
+            if path.is_relative_to(self.project_dir) or not path.is_relative_to("/tmp"):
+                return str(path)
+            return str(self.shared_tmp / path.relative_to("/tmp"))
+
+        seen = dict(inputs)
+        for key, value in inputs.items():
+            if key == "path" or key.endswith("_path"):
+                seen[key] = here(value)
+            elif (key == "paths" or key.endswith("_paths")) and isinstance(value, list):
+                seen[key] = [here(item) for item in value]
+        return seen
 
     def _cwd(self, requested: str) -> str:
         """The agent's working folder, if the provider box has it; else the repository."""

@@ -293,3 +293,28 @@ def test_a_take_is_recorded_at_the_plate_length_it_asked_for(tmp_path, monkeypat
     assert result.data["cost_breakdown"] == {"plate": 0.392}
     assert result.data["resume_job"]["plate_seconds"] == 7
     assert tool._test_mux_calls == [5.542]  # the delivered take is still cut to the line
+
+
+def test_a_missing_audio_file_is_named_not_called_a_pricing_problem(tmp_path, monkeypatch):
+    """A take is priced by its audio's length. When the file was not where the call said, the
+    quote answered "cannot quote a price", the job refused the call as unpriced, and the
+    director of video 716 went reading the tool's source to learn that a path was wrong."""
+    from tools.base_tool import _budget_quote
+
+    tool = FalAvatar()
+    missing = str(tmp_path / "assets" / "audio" / "voice_A.wav")
+    with pytest.raises(FileNotFoundError, match="audio file not found: .*voice_A.wav"):
+        tool.estimate_cost({"image_path": "face.png", "audio_path": missing})
+    # For the budget check that is "no quote", not "no price": the call may go on, and it then
+    # fails on the file by name before anything is uploaded or spent.
+    assert _budget_quote(tool, {"image_path": "face.png", "audio_path": missing}) == (None, False)
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    with patch("requests.post") as mock_post:
+        result = tool.execute({"image_path": str(tmp_path / "face.png"), "audio_path": missing,
+                               "output_path": str(tmp_path / "take.mp4")})
+    assert result.success is False and "File not found" in result.error and "voice_A.wav" in result.error
+    mock_post.assert_not_called()
+    # With no audio named at all, the price really cannot be quoted, and that is still said so.
+    with pytest.raises(PriceQuoteRequired):
+        tool.estimate_cost({"image_url": "https://x/p.png", "audio_url": "https://x/a.mp3"})
+    assert _budget_quote(tool, {"image_url": "https://x/p.png", "audio_url": "https://x/a.mp3"}) == (None, True)
