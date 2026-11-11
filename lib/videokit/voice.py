@@ -115,16 +115,29 @@ def conform(tokens: list[str], heard: list[dict[str, Any]], total: float) -> tup
     """Give every script token a start and an end from what was heard.
 
     Returns the timed tokens and the share of tokens whose timing was heard directly."""
+    words, share, _edges = conform_edges(tokens, heard, total)
+    return words, share
+
+
+def conform_edges(tokens: list[str], heard: list[dict[str, Any]], total: float
+                  ) -> tuple[list[dict[str, Any]], float, list[tuple[bool, bool]]]:
+    """`conform`, and for every token whether its start and its end were heard themselves.
+
+    A word the transcriber wrote differently still has the stretch it was heard in, so the
+    outer edges of that stretch are heard; a word nobody heard only shares a gap. This is what
+    a cut between two lines may lean on (lib/videokit/cut.py)."""
     if _UNSPACED.search("".join(tokens)):
         return _conform_characters(tokens, heard, total)
     a = [norm(t) for t in tokens]
     b = [norm(h["word"]) for h in heard]
     times: list[tuple[float, float] | None] = [None] * len(tokens)
+    edges = [[False, False] for _ in tokens]
     direct = 0
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
         if tag == "equal":
             for k in range(i2 - i1):
                 times[i1 + k] = (heard[j1 + k]["start"], heard[j1 + k]["end"])
+                edges[i1 + k] = [True, True]
                 direct += 1
         elif tag == "replace":
             # The same stretch of audio, written differently ("4x" heard as "four times"):
@@ -136,6 +149,8 @@ def conform(tokens: list[str], heard: list[dict[str, Any]], total: float) -> tup
                 span = (t1 - t0) * weight / sum(weights)
                 times[i] = (cursor, cursor + span)
                 cursor += span
+            edges[i1][0] = True
+            edges[i2 - 1][1] = True
     # Tokens nobody heard: share the gap between their timed neighbours.
     i = 0
     while i < len(tokens):
@@ -161,13 +176,20 @@ def conform(tokens: list[str], heard: list[dict[str, Any]], total: float) -> tup
         end = max(start, min(end, total))
         words.append({"text": token, "start": round(start, 3), "end": round(end, 3)})
         previous_end = start
-    return words, (direct / len(tokens) if tokens else 1.0)
+    return words, (direct / len(tokens) if tokens else 1.0), [(start, end) for start, end in edges]
 
 
-def _conform_characters(tokens: list[str], heard: list[dict[str, Any]], total: float) -> tuple[list[dict[str, Any]], float]:
+def _conform_characters(tokens: list[str], heard: list[dict[str, Any]], total: float
+                        ) -> tuple[list[dict[str, Any]], float, list[tuple[bool, bool]]]:
     """Scripts without spaces: the transcriber cuts words differently than the script does, so
-    match character by character and let each script word span the characters it owns."""
+    match character by character and let each script word span the characters it owns. A word's
+    edge is heard when its first (its last) character is."""
     script = [(i, ch) for i, token in enumerate(tokens) for ch in norm(token)]
+    first_of: dict[int, int] = {}
+    last_of: dict[int, int] = {}
+    for position, (index, _ch) in enumerate(script):
+        first_of.setdefault(index, position)
+        last_of[index] = position
     clock: list[tuple[str, float, float]] = []
     for h in heard:
         chars = norm(h["word"])
@@ -175,6 +197,7 @@ def _conform_characters(tokens: list[str], heard: list[dict[str, Any]], total: f
             span = (h["end"] - h["start"]) / len(chars)
             clock.append((ch, h["start"] + k * span, h["start"] + (k + 1) * span))
     spans: list[list[float] | None] = [None] * len(tokens)
+    edges = [[False, False] for _ in tokens]
     matched = 0
     for tag, i1, i2, j1, _j2 in difflib.SequenceMatcher(a=[c for _, c in script], b=[c for c, _, _ in clock], autojunk=False).get_opcodes():
         if tag != "equal":
@@ -183,6 +206,8 @@ def _conform_characters(tokens: list[str], heard: list[dict[str, Any]], total: f
             index = script[i1 + k][0]
             _, start, end = clock[j1 + k]
             spans[index] = [min(spans[index][0], start), max(spans[index][1], end)] if spans[index] else [start, end]  # type: ignore[index]
+            edges[index][0] = edges[index][0] or first_of[index] == i1 + k
+            edges[index][1] = edges[index][1] or last_of[index] == i1 + k
             matched += 1
     # Words nobody heard share the gap between their timed neighbours.
     i = 0
@@ -205,7 +230,7 @@ def _conform_characters(tokens: list[str], heard: list[dict[str, Any]], total: f
         previous = words[-1]["start"] if words else 0.0
         start = max(previous, min(start, total))
         words.append({"text": token, "start": round(start, 3), "end": round(max(start, min(end, total)), 3)})
-    return words, (matched / len(script) if script else 1.0)
+    return words, (matched / len(script) if script else 1.0), [(start, end) for start, end in edges]
 
 
 def split_points(words: list[dict[str, Any]], total: float, limit: float = TAKE_LIMIT_SECONDS) -> list[float]:

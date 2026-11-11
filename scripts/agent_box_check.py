@@ -101,6 +101,38 @@ print(json.dumps(report))
 '''
 
 
+# Run in a paid tool's box, as the desk builds one. A video's voice can be the recording that
+# comes with its design, cut into the lines there (tools/audio/voiceover_tts.py): the box must
+# be able to read and write sound and to time words without the network. A tone has no words,
+# and the cutter says exactly that once the transcriber's model has loaded and listened.
+CUT_PROBE = r'''
+import json, os, subprocess, sys
+from array import array
+from pathlib import Path
+sys.path.insert(0, os.environ["OM_CHECK_REPO"])
+from lib.videokit import cut
+
+report = {}
+tone = Path("/tmp/cut_check_tone.mp3")
+made = subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=330:duration=2",
+                       "-c:a", "libmp3lame", str(tone)], capture_output=True)
+report["tone"] = made.returncode == 0 and tone.is_file()
+try:
+    cut.cut_lines(tone, [{"id": "A", "text": "A line nobody says.", "output_path": "/tmp/cut_check_A.mp3"}])
+    report["listened"] = "cut a tone into a line"
+except cut.CutError as exc:
+    report["listened"] = str(exc)
+except Exception as exc:
+    report["listened"] = f"error: {type(exc).__name__}: {exc}"[:300]
+try:
+    cut._encode(array("h", [0] * cut.RATE), Path("/tmp/cut_check_line.mp3"))
+    report["written"] = Path("/tmp/cut_check_line.mp3").stat().st_size > 0
+except Exception as exc:
+    report["written"] = f"error: {type(exc).__name__}: {exc}"[:300]
+print(json.dumps(report))
+'''
+
+
 def stand_in_upstream(request: httpx.Request) -> httpx.Response:
     assert request.headers.get("x-api-key") == STAND_IN_KEY, "the gateway did not add the server's key"
     return httpx.Response(200, json={"id": "msg_box_check", "type": "message", "role": "assistant",
@@ -135,11 +167,26 @@ async def run() -> int:
             out, err = await asyncio.wait_for(process.communicate(), timeout=120)
             token = box.session_env()["OM_BOX_CLAUDE_TOKEN"]
             gateway_requests = box.gateway.requests if box.gateway else 0
+            # A paid tool's box, built the way the desk builds one (engine/sandbox/desk.py).
+            spec = box.box_dir / "cut_check.json"
+            spec.write_text(json.dumps({"ro": box.desk.ro_paths, "rw": [[str(project), str(project)], [str(box.tmp), "/tmp"]],
+                                        "share_net": True, "env_from_parent": True, "chdir": str(REPO_ROOT)}),
+                            encoding="utf-8")
+            (box.tmp / "cut_probe.py").write_text(CUT_PROBE, encoding="utf-8")
+            cutter = await asyncio.create_subprocess_exec(
+                sys.executable, str(LAUNCH), str(spec), sys.executable, "/tmp/cut_probe.py",
+                env={**box.desk.provider_env, "OM_CHECK_REPO": str(REPO_ROOT)}, cwd=str(REPO_ROOT),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            cut_out, cut_err = await asyncio.wait_for(cutter.communicate(), timeout=300)
         try:
             report = json.loads(out.decode().strip().splitlines()[-1])
         except (ValueError, IndexError):
             print("FAIL  the probe did not report:\n" + err.decode("utf-8", "replace")[-2000:])
             return 1
+        try:
+            cut_report = json.loads(cut_out.decode().strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            cut_report = {"listened": "the probe did not report: " + cut_err.decode("utf-8", "replace")[-600:]}
     finally:
         os.environ.pop(MARKER, None)
         shutil.rmtree(work, ignore_errors=True)
@@ -174,11 +221,17 @@ async def run() -> int:
          "BUDGET REACHED" in str(report["desk_voice"]) and "voiceover_tts" in str(report["desk_voice"])),
         ("the box cannot create boxes of its own", report["nested_namespace"] not in (0, "0")),
         ("the container's refused system calls stay refused", report["io_uring_errno"] == 1),
+        ("a paid tool's box can time words and cut sound (a video's voice as one recording)",
+         cut_report.get("tone") is True and cut_report.get("written") is True
+         # Either answer means the model loaded and listened: a tone has no words, or none of the line's.
+         and str(cut_report.get("listened")).startswith(("no words were heard", "line A was not heard"))),
     ]
     for label, ok in checks:
         print(f"{'PASS' if ok else 'FAIL'}  {label}")
     if leaked:
         print("      leaked:", ", ".join(leaked))
+    if not checks[-1][1]:
+        print("      the cutter's probe:", json.dumps(cut_report)[:700])
     return 0 if all(ok for _, ok in checks) else 1
 
 

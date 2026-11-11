@@ -10,6 +10,7 @@ of speech with a voice that was removed.
 
 from __future__ import annotations
 
+import base64
 import math
 import threading
 import time
@@ -47,6 +48,10 @@ class FakeEleven:
         self.speech: list[tuple[str, str, str]] = []  # (voice id, model, text)
         self.design_error: _Response | None = None
         self.design_busy = 0  # how many designs are answered "too many requests at once" first
+        # Every design that was answered: its description and the text its candidates speak. A
+        # candidate's recording is the text itself, marked with the candidate it belongs to.
+        self.designs: list[dict[str, str]] = []
+        self.recordings = True  # False: candidates come without a recording
         self.save_errors: list[_Response] = []
         # Statuses a speech call answers before it works, taken one per call: 429, 500 ...
         self.speech_troubles: list[int] = []
@@ -130,10 +135,17 @@ class FakeEleven:
             self._serial += 1
             serial = self._serial
             self.character_count += len(text)
+            self.designs.append({"voice_description": str(body["voice_description"]), "text": text})
         if self.after_design is not None:
             self.after_design()
+
+        def recording(candidate: int) -> str:
+            if not self.recordings:
+                return ""
+            return base64.b64encode(f"REC[gen-{serial}-{candidate}]{text}".encode()).decode()
+
         return _Response(200, {"text": text, "previews": [
-            {"generated_voice_id": f"gen-{serial}-{i}", "audio_base_64": "", "media_type": "audio/mpeg",
+            {"generated_voice_id": f"gen-{serial}-{i}", "audio_base_64": recording(i), "media_type": "audio/mpeg",
              "duration_secs": 12.0} for i in range(3)]})
 
     def _save(self, body: dict) -> _Response:

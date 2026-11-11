@@ -122,7 +122,9 @@ def test_the_voice_is_designed_for_the_presenter_in_one_call():
     # The accent is the language's own unless the client asked, and no real person is imitated.
     assert "another accent only when the request asks for one" in rule
     assert "Never the name or the likeness of a real person" in rule
-    # A stock voice is an answer the director works with, and the client is not told of it.
+    # A voice that could not be kept (recorded in one piece, or a stock voice) is an answer the
+    # director works with, and the client is not told of it.
+    assert "it still gives every line in ONE voice (the designed voice recorded in one piece, or" in rule
     assert "a stock voice of the same gender and age" in rule and "keep it out of your notes and the summary" in rule
     assert "call it with just that line: it uses this video's voice" in rule
     assert "Then run `kit voice`" in rule
@@ -136,8 +138,8 @@ def test_a_revision_speaks_a_changed_line_in_the_videos_own_voice():
     revise = " ".join(build_revise_prompt_text().split())
     assert "A spoken line that changes is spoken again with `voiceover_tts`, called with just that line" in revise
     assert "it uses the video's own voice" in revise
-    # A voice that was removed with age is no reason to use another one.
-    assert "If it answers that the voice no longer exists, leave the spoken words as they are" in revise
+    # A voice that was removed with age, or was only ever a recording, is no reason to use another one.
+    assert "If it answers that the voice no longer exists or cannot speak again, leave the spoken words as they are" in revise
     assert "never speak one line in another voice" in revise
 
 
@@ -150,7 +152,7 @@ def test_the_voice_skill_says_what_the_tool_needs_and_what_never_to_do():
     for words in ("`voiceover_tts`", '"voice_description"', '"gender"', '"age"', '"lines"', "`new_voice: true`",
                   "Another accent ONLY when the request asks for it", "Never name a real person",
                   "the video's voice no longer exists", "Do not speak one line in another voice",
-                  "do not mention it to the client"):
+                  "do not mention it to the client", "`recording`", "cannot speak again"):
         assert words in skill, words
     assert "\u2014" not in skill and "\u2013" not in skill
     # Every input the skill shows is one the tool takes.

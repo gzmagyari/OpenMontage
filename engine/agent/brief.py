@@ -133,10 +133,11 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
    states it), `language` "{language}", and `lines`, each with its `id` from the edit (rule 10),
    its `text` and its `output_path` `{project}/assets/audio/<line id>.mp3`. It designs the voice,
    speaks every line with it (about $0.07 for a 30 second script) and keeps the voice for this
-   video; when no designed voice can be had it speaks the lines with a stock voice of the same
-   gender and age and says so in its answer, which is fine: carry on, and keep it out of your
-   notes and the summary. To speak a line again later, call it with just that line: it uses
-   this video's voice. Then run `kit voice`: it tightens the pauses, times
+   video; when no voice can be kept it still gives every line in ONE voice (the designed voice
+   recorded in one piece, or a stock voice of the same gender and age) and says so in its
+   answer, which is fine: carry on, and keep it out of your notes and the summary. To speak a
+   line again later, call it with just that line: it uses this video's voice. Then run
+   `kit voice`: it tightens the pauses, times
    every word of the script and lays the lines end to end. Never hand-roll audio filters and
    never trim or split a line yourself.
 5. Every on-camera talking shot comes from tool `fal_avatar` - read its skill in
@@ -268,9 +269,9 @@ only what the feedback touches, and keep every locked production decision from t
 fixed in place before the take is regenerated - h3_max_video motion on scenes without a take,
 {IMAGE_MODEL} at {IMAGE_QUALITY} quality for any new image, review gates). A spoken line that
 changes is spoken again with `voiceover_tts`, called with just that line (its `id`, `text` and
-`output_path`): it uses the video's own voice. If it answers that the voice no longer exists, leave
-the spoken words as they are, apply the rest of the feedback and say so in the summary; never speak
-one line in another voice. When
+`output_path`): it uses the video's own voice. If it answers that the voice no longer exists or
+cannot speak again, leave the spoken words as they are, apply the rest of the feedback and say so in
+the summary; never speak one line in another voice. When
 {project}/composition/edit.json exists the video was made with the video kit: change the edit, the
 look or a scene, run `kit voice` again only if a spoken line changed, then `kit check`, `kit sheet`
 and `kit render --name <a new name>`. Otherwise edit the existing composition code as it is.

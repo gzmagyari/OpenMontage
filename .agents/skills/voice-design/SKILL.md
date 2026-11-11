@@ -1,6 +1,6 @@
 ---
 name: voice-design
-description: A video's voiceover in one voice designed for its presenter, with tool voiceover_tts (ElevenLabs Voice Design and Eleven v4 Turbo, a stock voice when no designed voice can be had). Read before the first voiceover_tts call - how to describe the voice, the one call that speaks every line, speaking a line again later, and what the tool answers.
+description: A video's voiceover in one voice designed for its presenter, with tool voiceover_tts (ElevenLabs Voice Design and Eleven v4 Turbo; the design's own recording or a stock voice when no voice can be kept). Read before the first voiceover_tts call - how to describe the voice, the one call that speaks every line, speaking a line again later, and what the tool answers.
 ---
 
 # voiceover_tts - one voice for one video
@@ -69,12 +69,15 @@ Three descriptions that gave voices the owner liked:
 
 ## What comes back
 
-- `voice.kind`: `saved` (the designed voice, kept for this video) or `stock`.
-- `fallback` and `note`, when a stock voice spoke instead: no designed voice could be had this
-  time (the month's voices are used up, no room, a refused description, ElevenLabs was slow).
-  The lines are all there and all in that one stock voice. Carry on; do not call again to "get
-  the designed voice", and do not mention it to the client.
+- `voice.kind`: `saved` (the designed voice, kept for this video), `recording` (the designed
+  voice, recorded in one piece and cut into the lines; it cannot speak again) or `stock`.
+- `fallback` and `note`, when no voice could be kept this time (the month's voices are used up,
+  no room, a refused description, ElevenLabs was slow). The lines are all there and all in ONE
+  voice: the designed voice as a `recording`, or a `stock` voice of the same gender and age.
+  Carry on; do not call again to "get the designed voice", and do not mention it to the client.
 - `lines`: each line's file. `cost_usd` is what the call cost.
+
+Whatever the kind, the files are where you asked for them and `kit voice` runs next as always.
 
 ## Speaking a line again
 
@@ -87,9 +90,10 @@ Call the tool with just the lines to speak again (`id`, `text`, `output_path`), 
 It uses the video's own voice, designed or stock. Then run `kit voice` again and remake the take
 of that line.
 
-If it answers that **the video's voice no longer exists**, leave the spoken words as they are:
-change what else was asked (captions, on-screen text, timing, music, pictures) and say in the
-summary that the spoken words stayed. Do not speak one line in another voice.
+If it answers that **the video's voice no longer exists** or that it **cannot speak again** (a
+`recording`), leave the spoken words as they are: change what else was asked (captions,
+on-screen text, timing, music, pictures) and say in the summary that the spoken words stayed.
+Do not speak one line in another voice.
 
 `new_voice: true` gives the video a new voice. Every line must then be spoken again and every
 take remade, so use it only when the client asks for a different voice.

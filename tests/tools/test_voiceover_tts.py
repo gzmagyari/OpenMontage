@@ -1,20 +1,23 @@
 """voiceover_tts: one voice for one video. A voice is designed for the presenter, saved, used for
-every line and kept for the video; a later call speaks with it again; and when ElevenLabs cannot
-give a voice the lines are spoken by a stock voice instead, never by two voices."""
+every line and kept for the video; a later call speaks with it again. When no voice can be saved
+the design's own recording of the whole script is cut into the lines, and when that cannot be had
+either the lines are spoken by a stock voice. Never by two voices."""
 
 from __future__ import annotations
 
 import json
 import math
 import threading
+import types
 from pathlib import Path
 
 import pytest
 
+from lib.videokit import cut
 from tests.tools.eleven_fake import FakeEleven, _error
 from tools.audio import voiceover_tts
 from tools.audio.fal_elevenlabs_tts import FalElevenLabsTTS
-from tools.audio.voiceover_tts import GONE, VoiceoverTTS
+from tools.audio.voiceover_tts import GONE, ONCE, VoiceoverTTS
 from tools.base_tool import ToolResult, ToolStatus, _budget_quote
 
 TEXTS = {
@@ -39,9 +42,35 @@ def eleven(monkeypatch):
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.setenv("FAL_KEY", "fal-test-key")
     monkeypatch.setenv("OPENMONTAGE_INSTANCE_ID", "test")
-    for name in ("ELEVENLABS_USD_PER_1K_UNITS", "OPENMONTAGE_PROJECT_DIR"):
+    for name in ("ELEVENLABS_USD_PER_1K_UNITS", "OPENMONTAGE_PROJECT_DIR", "VOICEOVER_FIRST_CHOICE"):
         monkeypatch.delenv(name, raising=False)
     return fake
+
+
+@pytest.fixture()
+def cutter(monkeypatch):
+    """The kit's cutter, without audio (tests/kit/test_voice_cut.py cuts real sound): each line's
+    file says which candidate's recording it was cut from. `refuse` holds what the next
+    recordings are answered with, one entry a recording: a reason refuses it, None cuts it."""
+    state = types.SimpleNamespace(calls=[], refuse=[])
+
+    def cut_lines(recording, lines, *, language=None, work_dir=None, **_):
+        body = Path(recording).read_bytes()
+        candidate = body[4:body.index(b"]")].decode()
+        state.calls.append({"candidate": candidate, "lines": [dict(line) for line in lines], "language": language,
+                            "recording": body})
+        reason = state.refuse.pop(0) if state.refuse else None
+        if reason:
+            raise cut.CutError(reason)
+        for line in lines:
+            if line["output_path"]:
+                Path(line["output_path"]).parent.mkdir(parents=True, exist_ok=True)
+                Path(line["output_path"]).write_bytes(f"CUT[{candidate}]{line['text']}".encode())
+        return {"seconds": 12.0, "heard": 1.0, "pauses": [],
+                "lines": [{"id": line["id"], "start": 0.0, "end": 1.0, "seconds": 1.0, "heard": 1.0} for line in lines]}
+
+    monkeypatch.setattr(cut, "cut_lines", cut_lines)
+    return state
 
 
 @pytest.fixture()
@@ -93,6 +122,12 @@ def _sample() -> str:
     sample = f"{TEXTS['A']} {TEXTS['B']}"
     assert len(TEXTS["A"]) < 100 < len(sample) == 143
     return sample
+
+
+def _script(ids: str = "ABC") -> str:
+    """What a design is given when its own recording is to be the voice: the whole script, one
+    line a paragraph."""
+    return "\n\n".join(TEXTS[i] for i in ids)
 
 
 # -- the first call ------------------------------------------------------------------------
@@ -272,50 +307,41 @@ def test_without_an_elevenlabs_key_a_stock_voice_of_the_same_gender_and_age_spea
     assert again.success and stock[-1]["voice"] == "Bill" and again.data["voice"]["reused"] is True
 
 
-@pytest.mark.parametrize("setup, reason", [
-    (lambda fake: setattr(fake, "add_edit_counter", fake.max_add_edits), "voice creations on the ElevenLabs account are used up"),
-    (lambda fake: setattr(fake, "character_count", fake.character_limit - 50), "too few characters left"),
-])
-def test_a_used_up_account_is_seen_before_anything_is_spent(eleven, stock, tmp_path, setup, reason):
-    setup(eleven)
-    before = eleven.character_count
+def test_an_account_without_characters_is_seen_before_anything_is_spent(eleven, stock, cutter, tmp_path):
+    eleven.character_count = eleven.character_limit - 50
     project = _project(tmp_path)
     result = VoiceoverTTS().execute({**FIRST, "lines": _lines(project)})
-    assert result.success and reason in result.data["fallback"]
-    assert eleven.paths("POST") == [], "no design was bought that could not be saved"
-    assert eleven.character_count == before and result.data["elevenlabs_units"] == 0
-    assert len(stock) == 3 and result.data["request_ids"]
+    assert result.success and result.data["voice"]["kind"] == "stock"
+    # Neither a saved voice nor the design's own recording fits into what is left, and each says so.
+    assert "too few characters left (50, this script needs about" in result.data["fallback"]
+    assert f"the recording needs {len(_script())}" in result.data["fallback"]
+    assert eleven.paths("POST") == [], "no design was bought"
+    assert eleven.character_count == eleven.character_limit - 50 and result.data["elevenlabs_units"] == 0
+    assert len(stock) == 3 and result.data["request_ids"] and cutter.calls == []
 
 
-def test_a_refused_description_falls_back_with_elevenlabs_own_words(eleven, stock, tmp_path):
+def test_a_refused_description_goes_to_the_stock_voice_with_elevenlabs_own_words(eleven, stock, cutter, tmp_path):
+    """The recording is a design of the same description: it is not asked for a second refusal."""
     eleven.design_error = _error(400, "voice_design_refused", "The description names a real person.")
     project = _project(tmp_path)
     result = VoiceoverTTS().execute({**FIRST, "lines": _lines(project)})
     assert result.success and "The description names a real person." in result.data["fallback"]
+    assert "recording" not in result.data["fallback"]
     assert eleven.voices == {} and len(stock) == 3 and result.data["elevenlabs_units"] == 0
+    assert eleven.count("POST", "/v1/text-to-voice/design") == 1 and cutter.calls == []
 
 
-def test_when_speaking_fails_midway_every_line_is_spoken_again_by_the_stock_voice(eleven, stock, tmp_path, no_waiting):
-    """Two voices in one video is the one thing that must not happen."""
-    project = _project(tmp_path)
-    eleven.speech_troubles = [0, 500, 500, 500, 500]  # the first line works, then ElevenLabs breaks
-    eleven.speech_always = 500
-    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(project)})
-
-    assert result.success, result.error
-    assert sorted(call["text"] for call in stock) == sorted(TEXTS[i] for i in "ABC")
-    for line in _lines(project):
-        assert Path(line["output_path"]).read_bytes().startswith(b"STOCK[Bill]"), "no line kept the designed voice"
-    assert eleven.voices == {}, "a voice that could not be used is not kept"
-    assert _record(project)["kind"] == "stock"
-    # Both were charged, so the cost is the sum and stays the tool's own figure.
-    spoken = len(eleven.speech)
-    assert spoken >= 1 and result.data["elevenlabs_units"] > len(_sample())
-    assert result.data["costs"]["stock_usd"] > 0 and result.data["request_ids"] == []
-    assert result.cost_usd == round(usd(result.data["elevenlabs_units"]) + result.data["costs"]["stock_usd"], 4)
+def test_an_account_that_cannot_be_read_goes_to_the_stock_voice(eleven, stock, cutter, tmp_path, monkeypatch):
+    real = eleven.request
+    monkeypatch.setattr("requests.request", lambda method, url, **kwargs: (
+        _error(401, "invalid_api_key", "Invalid API key.") if url.endswith("/v1/user/subscription")
+        else real(method, url, **kwargs)))
+    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path))})
+    assert result.success and result.data["voice"]["kind"] == "stock" and "Invalid API key." in result.data["fallback"]
+    assert eleven.paths("POST") == [] and cutter.calls == []
 
 
-def test_lines_still_waiting_are_not_spoken_in_a_voice_that_will_not_be_used(eleven, stock, tmp_path, no_waiting):
+def test_lines_still_waiting_are_not_spoken_in_a_voice_that_will_not_be_used(eleven, stock, cutter, tmp_path, no_waiting):
     project = _project(tmp_path)
     TEXTS.update({str(n): f"Line number {n} of a longer script that needs speaking." for n in range(6)})
     try:
@@ -325,7 +351,7 @@ def test_lines_still_waiting_are_not_spoken_in_a_voice_that_will_not_be_used(ele
     finally:
         for n in range(6):
             TEXTS.pop(str(n))
-    assert result.success and result.data["voice"]["kind"] == "stock" and len(stock) == 9
+    assert result.success and result.data["voice"]["kind"] == "recording" and stock == []
     # One line worked, the two lines in flight were tried three times each; the other six never asked.
     assert eleven.count("POST", "/v1/text-to-speech/") <= 7 and len(eleven.speech) == 1
 
@@ -385,12 +411,21 @@ def test_a_busy_account_is_waited_out_while_the_voice_is_designed_too(eleven, st
     assert result.data["costs"]["design_usd"] == round(usd(len(_sample())), 4)
 
 
-def test_the_designed_path_has_a_time_limit(eleven, stock, tmp_path, no_waiting, monkeypatch):
+def test_each_step_has_a_time_limit(eleven, stock, cutter, tmp_path, no_waiting, monkeypatch):
     monkeypatch.setattr(VoiceoverTTS, "_DESIGNED_SECONDS", 0.0)
     eleven.speech_always = 429
     project = _project(tmp_path)
     result = VoiceoverTTS().execute({**FIRST, "lines": _lines(project)})
-    assert result.success and "in time" in result.data["fallback"] and len(stock) == 3 and eleven.voices == {}
+    # The saved voice ran out of time: the recording, which has its own, takes over.
+    assert result.success and "in time" in result.data["fallback"] and eleven.voices == {}
+    assert result.data["voice"]["kind"] == "recording" and stock == []
+    # A recording that cannot be had in its time leaves the stock voice.
+    monkeypatch.setattr(VoiceoverTTS, "_RECORDING_SECONDS", 0.0)
+    eleven.design_busy = 99
+    eleven.add_edit_counter = eleven.max_add_edits
+    other = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path, "job_slow"))})
+    assert other.success and other.data["voice"]["kind"] == "stock" and len(stock) == 3
+    assert "used up; and the design's own recording could not be used" in other.data["fallback"]
 
 
 def test_the_stock_voice_failing_too_is_a_failure_that_keeps_what_was_spent(eleven, tmp_path, monkeypatch):
@@ -398,6 +433,206 @@ def test_the_stock_voice_failing_too_is_a_failure_that_keeps_what_was_spent(elev
     eleven.design_error = _error(500, "internal_error", "Something went wrong.")
     result = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path))})
     assert not result.success and "stock voice could not speak" in result.error and "fal is down" in result.error
+
+
+# -- the second choice: the design's own recording ---------------------------------------------
+
+def test_when_the_months_voices_are_used_up_the_designs_own_recording_speaks(eleven, stock, cutter, tmp_path):
+    """Saving a voice counts against the month; a design that saves nothing does not. So the
+    design speaks the whole script itself and the recording is cut into the lines."""
+    eleven.add_edit_counter = eleven.max_add_edits
+    project = _project(tmp_path)
+    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(project), "language": "en"})
+
+    assert result.success, result.error
+    # ONE paid call: a design of the same description with the whole script, a line a paragraph.
+    assert eleven.paths("POST") == ["/v1/text-to-voice/design"]
+    assert eleven.designs == [{"voice_description": FIRST["voice_description"], "text": _script()}]
+    assert eleven.voices == {} and eleven.add_edit_counter == eleven.max_add_edits, "nothing was saved"
+    assert eleven.speech == [] and stock == []
+    # Every line is cut from the FIRST candidate's recording, and that recording is kept.
+    candidate = cutter.calls[0]["candidate"]
+    assert len(cutter.calls) == 1 and candidate.endswith("-0") and cutter.calls[0]["language"] == "en"
+    assert [(line["id"], line["text"]) for line in cutter.calls[0]["lines"]] == [(i, TEXTS[i]) for i in "ABC"]
+    for line in _lines(project):
+        assert Path(line["output_path"]).read_bytes() == f"CUT[{candidate}]{line['text']}".encode()
+    assert (project / "artifacts" / "voice_recording.mp3").read_bytes() == cutter.calls[0]["recording"]
+    record = _record(project)
+    assert (record["kind"], record["model"], record["candidate"]) == ("recording", "design-recording", 0)
+    assert record["gender"] == "man" and [line["id"] for line in record["lines"]] == ["A", "B", "C"]
+    assert "voice creations on the ElevenLabs account are used up" in record["fallback"]
+    # The cost is the design's text, counted once, and the line is ElevenLabs' own.
+    assert result.data["elevenlabs_units"] == len(_script()) == eleven.character_count
+    assert result.cost_usd == round(usd(len(_script())), 4)
+    assert result.data["costs"] == {"design_usd": round(usd(len(_script())), 4), "speech_usd": 0.0, "stock_usd": 0.0}
+    assert result.data["provider"] == "elevenlabs" and result.model == "design-recording"
+    assert result.data["voice"] == {"kind": "recording", "reused": False} and result.data["request_ids"] == []
+    # The director is told what it has; the operator is told why.
+    assert "cannot speak again" in result.data["note"] and "used up" in result.data["note"]
+    assert result.data["operator_note"].startswith("voiceover_tts used the design's own recording: this month's voice")
+    assert "stock" not in result.data["note"]
+
+
+def test_a_voice_that_could_not_speak_every_line_gives_way_to_the_recording(eleven, stock, cutter, tmp_path, no_waiting):
+    """Two voices in one video is the one thing that must not happen."""
+    project = _project(tmp_path)
+    eleven.speech_troubles = [0, 500, 500, 500, 500]  # the first line works, then ElevenLabs breaks
+    eleven.speech_always = 500
+    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(project)})
+
+    assert result.success, result.error
+    for line in _lines(project):
+        assert Path(line["output_path"]).read_bytes().startswith(b"CUT["), "no line kept the saved voice"
+    assert eleven.voices == {}, "a voice that could not be used is not kept"
+    assert _record(project)["kind"] == "recording" and stock == []
+    # All of it was charged: the first design, the line that was spoken, the second design.
+    assert len(eleven.speech) >= 1
+    assert result.data["elevenlabs_units"] > len(_sample()) + len(_script())
+    assert result.cost_usd == round(usd(result.data["elevenlabs_units"]), 4)
+
+
+def test_when_the_recording_cannot_be_had_either_the_stock_voice_speaks_every_line(eleven, stock, cutter, tmp_path, no_waiting):
+    project = _project(tmp_path)
+    eleven.speech_troubles = [0]
+    eleven.speech_always = 500
+    eleven.recordings = False  # the second design comes back without sound
+    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(project)})
+
+    assert result.success, result.error
+    assert sorted(call["text"] for call in stock) == sorted(TEXTS[i] for i in "ABC")
+    for line in _lines(project):
+        assert Path(line["output_path"]).read_bytes().startswith(b"STOCK[Bill]")
+    assert _record(project)["kind"] == "stock" and eleven.voices == {} and cutter.calls == []
+    assert "and the design's own recording could not be used: the voice design returned no recording" in result.data["fallback"]
+    # Three steps were paid for, so the cost is their sum and stays the tool's own figure.
+    assert result.data["elevenlabs_units"] > len(_sample()) + len(_script())
+    assert result.data["costs"]["stock_usd"] > 0 and result.data["request_ids"] == []
+    assert result.cost_usd == round(usd(result.data["elevenlabs_units"]) + result.data["costs"]["stock_usd"], 4)
+    assert result.data["operator_note"].startswith("voiceover_tts used the stock voice Bill:")
+
+
+def test_the_first_recording_that_can_be_cut_is_the_videos_voice(eleven, stock, cutter, tmp_path):
+    """A design returns three candidates, each with its own recording, for one price."""
+    eleven.add_edit_counter = eleven.max_add_edits
+    cutter.refuse = ["there is no pause between line A and line B", None]
+    project = _project(tmp_path)
+    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(project)})
+    assert result.success and result.data["voice"]["kind"] == "recording"
+    assert [call["candidate"][-2:] for call in cutter.calls] == ["-0", "-1"]
+    assert _record(project)["candidate"] == 1
+    assert Path(_lines(project)[0]["output_path"]).read_bytes().startswith(f"CUT[{cutter.calls[1]['candidate']}]".encode())
+    assert eleven.count("POST", "/v1/text-to-voice/design") == 1, "one design, three recordings"
+
+
+def test_recordings_that_cannot_be_cut_leave_the_stock_voice_and_are_still_paid_for(eleven, stock, cutter, tmp_path):
+    eleven.add_edit_counter = eleven.max_add_edits
+    cutter.refuse = ["line B was not heard in the recording (20% of its words)",
+                     "there is no pause between line A and line B", "there is no pause between line A and line B"]
+    project = _project(tmp_path)
+    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(project)})
+    assert result.success and result.data["voice"]["kind"] == "stock" and len(stock) == 3 and len(cutter.calls) == 3
+    reason = result.data["fallback"]
+    assert reason.startswith("this month's voice creations on the ElevenLabs account are used up; and the design's own")
+    assert "line B was not heard" in reason and reason.count("there is no pause between line A and line B") == 1
+    assert not (project / "artifacts" / "voice_recording.mp3").exists()
+    assert result.data["elevenlabs_units"] == len(_script())
+    assert result.cost_usd == round(usd(len(_script())) + result.data["costs"]["stock_usd"], 4)
+
+
+def test_a_script_longer_than_a_design_speaks_goes_to_the_stock_voice(eleven, stock, cutter, tmp_path):
+    eleven.add_edit_counter = eleven.max_add_edits
+    project = _project(tmp_path)
+    lines = [{"id": str(n), "text": "This sentence is forty-five characters long. " * 3,
+              "output_path": str(project / "assets" / "audio" / f"{n}.mp3")} for n in range(8)]
+    result = VoiceoverTTS().execute({**FIRST, "lines": lines})
+    assert result.success and result.data["voice"]["kind"] == "stock" and len(stock) == 8
+    assert "longer than a design can speak" in result.data["fallback"] and "1000 at most" in result.data["fallback"]
+    assert eleven.paths("POST") == [] and cutter.calls == [], "nothing was bought for a recording that cannot be"
+
+
+def test_a_design_that_fails_while_recording_leaves_the_stock_voice(eleven, stock, cutter, tmp_path):
+    eleven.add_edit_counter = eleven.max_add_edits
+    eleven.design_error = _error(500, "internal_error", "Something went wrong.")
+    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path))})
+    assert result.success and result.data["voice"]["kind"] == "stock" and len(stock) == 3
+    assert "used up; and the design's own recording could not be used" in result.data["fallback"]
+    assert "Something went wrong." in result.data["fallback"] and result.data["elevenlabs_units"] == 0
+
+
+def test_too_many_requests_is_waited_out_while_the_recording_is_made(eleven, stock, cutter, tmp_path, no_waiting):
+    eleven.add_edit_counter = eleven.max_add_edits
+    eleven.design_busy = 2
+    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path))})
+    assert result.success and result.data["voice"]["kind"] == "recording" and stock == []
+    assert eleven.count("POST", "/v1/text-to-voice/design") == 3 and result.data["elevenlabs_units"] == len(_script())
+
+
+def test_a_recorded_voice_cannot_speak_again_and_says_so(eleven, stock, cutter, tmp_path):
+    eleven.add_edit_counter = eleven.max_add_edits
+    project = _project(tmp_path)
+    tool = VoiceoverTTS()
+    assert tool.execute({**FIRST, "lines": _lines(project)}).success
+    before = {line["output_path"]: Path(line["output_path"]).read_bytes() for line in _lines(project)}
+    asked, spent = len(eleven.calls), eleven.character_count
+
+    changed = [{**_lines(project, "B")[0], "text": "Drop a pod in and press once."}]
+    again = tool.execute({"lines": changed})
+    assert not again.success and again.error == ONCE
+    assert "Leave the spoken words as they are" in again.error and "new_voice: true" in again.error
+    assert {path: Path(path).read_bytes() for path in before} == before
+    assert len(eleven.calls) == asked and eleven.character_count == spent and stock == []
+    assert not again.cost_usd, "a refusal costs nothing"
+    # A new month: `new_voice` gives the video a voice of its own after all, every line again.
+    eleven.add_edit_counter = 0
+    fresh = tool.execute({**FIRST, "lines": _lines(project), "new_voice": True})
+    assert fresh.success and fresh.data["voice"]["kind"] == "saved" and _record(project)["kind"] == "saved"
+    assert tool.execute({"lines": changed}).success, "and that voice does speak again"
+
+
+def test_a_server_can_make_the_recording_its_first_choice(eleven, stock, cutter, tmp_path, monkeypatch):
+    """VOICEOVER_FIRST_CHOICE=recording: no voice is ever saved, so no month's limit and no slot;
+    the price is the whole script as the design's text, and the quote says so before the call."""
+    monkeypatch.setenv("VOICEOVER_FIRST_CHOICE", "recording")
+    project = _project(tmp_path)
+    tool = VoiceoverTTS()
+    first = {**FIRST, "lines": _lines(project)}
+    assert tool.estimate_cost(first) == round(usd(len(_script())), 4)
+    assert tool.estimate_cost({"lines": _lines(project, "B")}) == round(usd(math.ceil(len(TEXTS["B"]) * 0.115)), 4)
+    result = tool.execute(first)
+    assert result.success and result.data["voice"] == {"kind": "recording", "reused": False}
+    assert eleven.paths("POST") == ["/v1/text-to-voice/design"] and eleven.voices == {} and eleven.add_edit_counter == 0
+    assert result.cost_usd == tool.estimate_cost(first)
+    # The operator chose it: it is not a fallback, and no warning is raised for it.
+    assert "fallback" not in result.data and "operator_note" not in result.data and "fallback" not in _record(project)
+    assert "cannot speak again" in result.data["note"]
+    # A script too long for a design is quoted, and spoken, as the stock voice.
+    long = [{"id": str(n), "text": "This sentence is forty-five characters long. " * 3,
+             "output_path": str(project / "assets" / "audio" / f"long{n}.mp3")} for n in range(8)]
+    assert tool.estimate_cost({**FIRST, "lines": long}) == round(sum(len(line["text"].strip()) for line in long) * 0.0001, 4)
+
+
+def test_a_script_shorter_than_a_design_takes_is_said_again_and_cut_from_its_first_saying(eleven, stock, cutter, tmp_path):
+    eleven.add_edit_counter = eleven.max_add_edits
+    project = _project(tmp_path)
+    lines = [{"id": "A", "text": "Fresh bread every morning.", "output_path": str(project / "assets" / "audio" / "A.mp3")},
+             {"id": "B", "text": "Come and smell it.", "output_path": str(project / "assets" / "audio" / "B.mp3")}]
+    result = VoiceoverTTS().execute({**FIRST, "lines": lines})
+    assert result.success and result.data["voice"]["kind"] == "recording"
+    script = "Fresh bread every morning.\n\nCome and smell it."
+    assert eleven.designs[0]["text"] == "\n\n".join([script] * 3) and len(script) < 100 <= len(eleven.designs[0]["text"])
+    # The cutter is told every line that is said; only the first saying has files.
+    given = cutter.calls[0]["lines"]
+    assert [line["text"] for line in given] == [line["text"] for line in lines] * 3
+    assert [bool(line["output_path"]) for line in given] == [True, True, False, False, False, False]
+    assert sorted(p.name for p in (project / "assets" / "audio").iterdir()) == ["A.mp3", "B.mp3"]
+    assert [line["id"] for line in _record(project)["lines"]] == ["A", "B"]
+
+
+@pytest.mark.parametrize("given, told", [("es", "es"), ("pt-BR", "pt"), ("EN", "en"), ("English", None), ("", "en")])
+def test_the_cutter_is_told_the_language_only_as_a_code(eleven, stock, cutter, tmp_path, given, told):
+    eleven.add_edit_counter = eleven.max_add_edits
+    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path)), "language": given})
+    assert result.success and cutter.calls[0]["language"] == told
 
 
 # -- room for a new voice --------------------------------------------------------------------
@@ -416,14 +651,16 @@ def test_a_full_account_gives_up_its_oldest_voice_of_ours_and_nothing_else(eleve
     assert any(v["name"] == "om-test-job_abc123" for v in eleven.voices.values())
 
 
-def test_a_voice_that_may_be_speaking_is_never_removed_to_make_room(eleven, stock, tmp_path):
+def test_a_voice_that_may_be_speaking_is_never_removed_to_make_room(eleven, stock, cutter, tmp_path):
     for n in range(3):
         eleven.add_voice(f"om-test-job_busy{n}", age_seconds=60)  # saved a minute ago
     before = set(eleven.voices)
     result = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path))})
     assert result.success and "no voice slot is free" in result.data["fallback"]
-    assert set(eleven.voices) == before and len(stock) == 3
-    assert eleven.count("POST", "/v1/text-to-voice/design") == 0, "nothing was designed that had no place"
+    assert set(eleven.voices) == before and stock == []
+    # Nothing was designed that had no place: the one design is the recording's, which needs none.
+    assert [design["text"] for design in eleven.designs] == [_script()]
+    assert result.data["voice"]["kind"] == "recording" and eleven.count("POST", "/v1/text-to-voice") == 1
 
 
 def test_a_slot_taken_in_between_is_made_room_for_once(eleven, stock, tmp_path):
@@ -438,9 +675,9 @@ def test_a_slot_taken_in_between_is_made_room_for_once(eleven, stock, tmp_path):
     assert result.data["made_room"] == "job_older" and eleven.count("POST", "/v1/text-to-voice/design") == 1
 
 
-def test_the_no_slot_answer_alone_is_enough_to_make_room(eleven, stock, tmp_path):
+def test_the_no_slot_answer_alone_is_enough_to_make_room(eleven, stock, cutter, tmp_path):
     """The answer to the save is what is acted on, so a count of saved voices that lagged would
-    not send a video to the stock voice."""
+    not cost a video its saved voice."""
     old = eleven.add_voice("om-test-job_older", age_seconds=7200)
     eleven.save_errors = [eleven.no_slot()]  # refused although the account still shows room
     result = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path))})
@@ -451,15 +688,29 @@ def test_the_no_slot_answer_alone_is_enough_to_make_room(eleven, stock, tmp_path
     eleven.save_errors = [eleven.no_slot()]
     result = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path, "job_next"))})
     assert result.success and "maximum amount of custom voices" in result.data["fallback"]
-    assert len(eleven.voices) == 2 and len(stock) == 3
+    assert len(eleven.voices) == 2 and result.data["voice"]["kind"] == "recording" and stock == []
 
 
-def test_a_save_refused_for_another_reason_removes_no_voice(eleven, stock, tmp_path):
+def test_a_save_refused_for_another_reason_removes_no_voice(eleven, stock, cutter, tmp_path):
     old = eleven.add_voice("om-test-job_older", age_seconds=7200)
     eleven.save_errors = [_error(500, "internal_error", "Something went wrong.")]
     result = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path))})
-    assert result.success and "Something went wrong." in result.data["fallback"] and len(stock) == 3
+    assert result.success and "Something went wrong." in result.data["fallback"]
     assert list(eleven.voices) == [old], "an older video keeps its voice when the slot was not the problem"
+    # The voice was designed and could not be kept: a second design speaks the script itself.
+    assert result.data["voice"]["kind"] == "recording" and stock == []
+    assert [design["text"] for design in eleven.designs] == [_sample(), _script()]
+    assert result.data["elevenlabs_units"] == len(_sample()) + len(_script())
+
+
+def test_a_voice_that_gave_way_is_reported_whichever_step_speaks(eleven, stock, cutter, tmp_path):
+    eleven.add_voice("The owner's own narrator", age_seconds=9_000_000, category="professional")
+    eleven.add_voice("om-server-job_theirs", age_seconds=8_000_000)
+    older = eleven.add_voice("om-test-job_older", age_seconds=7200)
+    eleven.save_errors = [_error(500, "internal_error", "Something went wrong.")]
+    result = VoiceoverTTS().execute({**FIRST, "lines": _lines(_project(tmp_path))})
+    assert result.success and result.data["voice"]["kind"] == "recording"
+    assert older not in eleven.voices and result.data["made_room"] == "job_older"
 
 
 # -- the price before the call ---------------------------------------------------------------

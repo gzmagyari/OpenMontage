@@ -242,16 +242,32 @@ through fal, chosen by the presenter's gender and age.
   minutes); a deleted job's voice goes the same way.
 - **What the account limits, and what happens then.** Voices saved at once: a new video that finds
   no slot free removes the oldest voice this installation keeps (never one younger than 20 minutes,
-  never a voice it did not make). Voices created a month, characters a month, a refused
-  description, an error or a slow answer: the lines are spoken by the stock voice instead, all of
-  them, and the job gets a warning that says why. A video never has two voices.
-- **A revision of a video whose voice is gone** (removed to make room) keeps its spoken words and
-  says so. It does not speak one line in another voice.
+  never a voice it did not make). When no voice can be saved (the month's voice creations are used
+  up, no slot can be freed, a save is refused, a line will not be spoken) the call goes down an
+  order by itself, and the job gets a warning that says why:
+  1. the saved voice, as above;
+  2. **the design's own recording.** A design speaks any text of 100 to 1,000 characters in the
+     new voice, and a design that saves nothing uses no slot and none of the month's creations
+     (ten in a row moved only the character count). So the whole script is given as that text
+     and the recording is cut into the lines (`lib/videokit/cut.py`: the transcriber finds the
+     words, each cut is moved into the pause between two lines). The voice still fits the
+     presenter. It cannot speak again;
+  3. a stock voice through fal, chosen by the presenter's gender and age. Also at once when the
+     design itself is refused (a description that names a real person), ElevenLabs cannot be
+     reached, too few characters are left, or the script is longer than 1,000 characters.
+
+  Every line comes from the same step. A video never has two voices.
+- **A revision of a video whose voice is gone** (removed to make room) **or was a recording** keeps
+  its spoken words and says so. It does not speak one line in another voice.
+- **`VOICEOVER_FIRST_CHOICE=recording`** makes every new video start at step 2: no voice is ever
+  saved, so the month's limit and the slots do not matter, at about twice the price a video and
+  without changing a spoken line later. Unset, the order starts at the saved voice.
 - **Cost.** ElevenLabs reports each spoken line in its own units, and a design counts the
-  characters of its sample text. The tool adds them up and turns them into dollars at
+  characters of its text once. The tool adds them up and turns them into dollars at
   `ELEVENLABS_USD_PER_1K_UNITS` (default 0.35). That line of a job's cost is the tool's own figure:
   unlike a fal line, it cannot be checked against the provider's bill call by call. About $0.07 for
-  a 30 second script.
+  a 30 second script with a saved voice, about $0.15 as a recording (the whole script is the
+  design's text). A call that goes down the order costs what its steps cost.
 - **Two installations on one account** (a local one and a server) each need their own
   `OPENMONTAGE_INSTANCE_ID`; each then removes only its own voices. They still share the account's
   slots and monthly counts.
