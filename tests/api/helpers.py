@@ -7,6 +7,23 @@ from pathlib import Path
 from lib import job_ledger
 
 
+POST = {"title": "Cold brew without the wait", "description": "Lumabrew makes cold brew in a minute. See how.",
+        "hashtags": ["lumabrew", "coldbrew", "coffeetok", "morningroutine"]}
+
+
+def write_posting(project: Path, *, post: bool = True, cover: bool = True) -> None:
+    """What a real run leaves beside its export: the cover picture and the post text. Call it after
+    the export is written: a cover older than the video counts as out of date."""
+    import json
+
+    if post:
+        (project / "artifacts").mkdir(parents=True, exist_ok=True)
+        (project / "artifacts" / "post.json").write_text(json.dumps(POST), encoding="utf-8")
+    if cover:
+        (project / "exports").mkdir(parents=True, exist_ok=True)
+        (project / "exports" / "cover.jpg").write_bytes(b"\xff\xd8\xff fake cover")
+
+
 def ledger_dir(options) -> Path:
     """The folder the runner points the session's tools at."""
     return Path(options.env[job_ledger.LEDGER_DIR_ENV])

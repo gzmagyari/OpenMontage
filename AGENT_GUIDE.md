@@ -910,6 +910,7 @@ work/kit/            voice.json, check.json, sheet.jpg, the bundle (all generate
 | `kit sheet [--draft]` | One sheet of the telling frames (about 8 s), plus layout findings measured in the browser. |
 | `kit mix` | The soundtrack: voice on the spine, music under it (or the music alone when there is no voice), cut to the video's length and faded out, -14 LUFS. Run it again after anything that changes the video's length, the voice or the music. |
 | `kit render [--name NAME]` | The final video in `exports/`, tagged BT.709, verified. Refuses while anything is missing, the soundtrack included. |
+| `kit cover [--at SECONDS]` | One frame of the finished video as `exports/cover.jpg`, at full size: the picture the video is posted with. Pick the second from the sheet (a clear face, readable words). Run it again after a render that changes that frame. |
 
 A draft never needs a stand-in made by hand: `check --draft` lists what is still missing
 ("Still generating", "Still to write") and `sheet --draft` shows a "waiting for ..." frame in

@@ -51,6 +51,62 @@ def presenter_card(job_key: str) -> str:
             f"wearing {pick(_WARDROBE, 4)}, filmed {pick(_SETTINGS, 5)}")
 
 
+# The two ways a product video can speak (the job's `style` option). "promote" is the direct ad
+# and the default. "mention" presents and praises the product just as fully, without telling the
+# viewer to do anything: no call to action and no offer wording, spoken or on screen.
+STYLES = ("promote", "mention")
+DEFAULT_STYLE = "promote"
+
+
+def clean_style(value: Any) -> str:
+    """A job's style as the brief understands it: an unknown or missing one is the default."""
+    return value if value in STYLES else DEFAULT_STYLE
+
+
+def _style_section(style: str) -> str:
+    if style != "mention":
+        return ""
+    return """## The style of this video: a mention (no call to action, no offer)
+
+The client chose the "mention" style. This video still sells: the presenter presents the product,
+explains what it does and why it is good, and names it as often as that helps, wherever it helps.
+What the video never does is push the viewer to act, because the push is what makes a viewer read
+a video as an advert and scroll past it. So, in the script, on screen and in the post text:
+
+- No call to action of any kind. Nothing tells the viewer to click, tap, go to, visit, buy, order,
+  sign up, download, try, check out or follow, and nothing points at a "link in bio". The
+  product's NAME is said and shown freely; its web address is not shown or spoken as a place to go.
+- No offer wording: no discount, coupon code, deadline, "limited time" or price pushed as a deal.
+  A plain fact the site states about the product is fine; a deal is not.
+- No card that asks for an action and no end card. The video ends on the presenter's last thought
+  about the product, or on the product itself.
+- The presenter is a host who shows and explains the product: never a customer, and never someone
+  reporting results of their own.
+
+Everything else in this brief stands: the research, the hook, the takes, the motion, the captions,
+the look. Where a stage skill or a kit look asks for a call to action, an offer line, a CTA card or
+an end card, this video has none. Leave them out, and do not put a softer version of the same push
+in their place ("you might want to take a look").
+
+"""
+
+
+def _post_text_rules(project: str, language: str, style: str) -> str:
+    """What the post text is and how it is written, for the brief and for the one follow-up."""
+    ending = ("like the video, it carries no call to action and no offer wording" if style == "mention"
+              else "it may end on the video's call to action")
+    return (
+        f"`{project}/artifacts/post.json`:\n"
+        '  `{"title": "...", "description": "...", "hashtags": ["...", "..."]}`, written in the video\'s\n'
+        f"  language ({language}). `title`: at most 90 characters, the hook as a viewer would say it, with\n"
+        "  no hashtag in it. `description`: one to three short sentences, at most 300 characters, opening\n"
+        f"  on the hook and saying what the product is and why it is worth a look; {ending}.\n"
+        "  `hashtags`: four to six, each without the `#` and without spaces: the product's own name, one\n"
+        "  or two broad ones its audience follows, the rest specific to what the product does. Nothing in\n"
+        "  it that the site and the request do not back up."
+    )
+
+
 def _references_section(references: list[dict[str, Any]]) -> str:
     if not references:
         return ""
@@ -72,8 +128,11 @@ def build_brief(
     language: str = "en",
     captions: bool = True,
     music: bool = True,
+    style: str = DEFAULT_STYLE,
 ) -> str:
     project = str(project_dir)
+    style = clean_style(style)
+    closing_beat = "a deliberate closing beat" if style == "mention" else "a deliberate closing beat under the CTA"
     card = presenter_card(project_dir.name or project)
     caption_rule = (
         "8. Word-level captions, burned in: the kit makes them from the script's exact words (rule "
@@ -108,7 +167,7 @@ standard decision log instead of asking. Work until the finished video is export
 Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: {language}.
 
 {_references_section(references)}
-## Locked production decisions (do not revisit; record them as given)
+{_style_section(style)}## Locked production decisions (do not revisit; record them as given)
 
 1. Standard OpenMontage flow: read AGENT_GUIDE.md first and follow its routing for this request.
 2. If the request names a product, company, app or website: research it before writing a word of
@@ -156,7 +215,7 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
    image_to_video, about $0.028 per output second at 768P; skill in `.agents/skills/minimax-h3/`): generate the still,
    then give it real subject and camera motion with a clear motion prompt. A slow pan or zoom
    over a static image is a last resort for when the budget is already spent, never the plan,
-   and a fully static frame is allowed only as a deliberate closing beat under the CTA.
+   and a fully static frame is allowed only as {closing_beat}.
 7. The hook matters: the first frame must work muted (a scroller decides in about one second).
 {caption_rule}
 {music_rule}
@@ -222,6 +281,16 @@ the edit and the plan file and record the reason in the decision log and RUN_REP
   fix what it shows in the edit or the look. `kit check` must pass with no errors; a warning is
   either fixed or answered in RUN_REPORT.md.
 
+## What is posted with the video
+
+Once the final video is rendered and checked, make the two things the client posts with it:
+
+- The cover picture. `kit cover --at <second>` saves that frame of the finished video as
+  `{project}/exports/cover.jpg`. Take the second from your frame sheet: the presenter's face
+  clear and the words on screen readable, the frame that would make someone tap this video in a
+  grid. Look at the picture once.
+- The post text, as {_post_text_rules(project, language, style)}
+
 ## Progress notes
 
 Nobody can answer you, but the client follows your messages live while the video is made. Before
@@ -251,12 +320,27 @@ edit). Leave file names, tool and model names, commands and costs out of these s
   is cut before the client reads the notes. Everything after it is for the operator: what you
   produced, every paid call with its cost, the total spend, rough wall time per stage, problems
   you hit and how you solved them, and the absolute path of the final video. The final MP4 must
-  exist under {project}/exports/ before you stop.
+  exist under {project}/exports/ before you stop, and so must the cover picture and the post text.
 """
 
 
-def build_revise_prompt(*, feedback: str, project_dir: Path, budget_usd: float) -> str:
+def build_post_prompt(*, project_dir: Path, language: str = "en", style: str = DEFAULT_STYLE) -> str:
+    """The one follow-up a finished session gets when its video has no usable post text."""
     project = str(project_dir)
+    return (
+        "The video is finished and exported, but the text the client posts with it is missing or cannot "
+        "be read. You are unattended: write it now, change nothing else in the project, and stop. Write "
+        f"{_post_text_rules(project, language, clean_style(style))}\n"
+    )
+
+
+def build_revise_prompt(*, feedback: str, project_dir: Path, budget_usd: float,
+                        style: str = DEFAULT_STYLE) -> str:
+    project = str(project_dir)
+    kept_style = (
+        "\nThis video is in the mention style: it presents and praises the product with no call to action, "
+        "no offer wording and no end card. The revision keeps that, unless the feedback itself asks for one.\n"
+        if clean_style(style) == "mention" else "")
     return f"""The client reviewed the video you produced in this session and wants a revision. You are again
 running unattended: never pause for approval, decide and record. Their feedback:
 
@@ -276,11 +360,14 @@ the summary; never speak one line in another voice. When
 look or a scene, run `kit voice` again only if a spoken line changed, then `kit check`, `kit sheet`
 and `kit render --name <a new name>`. Otherwise edit the existing composition code as it is.
 Update the plan file where the revision changes it.
-Additional paid-generation budget for this revision: ${budget_usd:.2f}; keep logging costs to
+{kept_style}Additional paid-generation budget for this revision: ${budget_usd:.2f}; keep logging costs to
 {project}/artifacts/cost_log.json.
 
 Export the revised video as a NEW file under {project}/exports/ (do not overwrite the previous
-export). Before you stop, update {project}/RUN_REPORT.md: add a "Revision" section, and bring the
+export). If the revision changes the frame the cover shows, make the cover again from the new
+export (`kit cover --at <second>`); if it changes the spoken words or what the video says about the
+product, bring {project}/artifacts/post.json (the post's title, description and hashtags) up to
+date. Before you stop, update {project}/RUN_REPORT.md: add a "Revision" section, and bring the
 `## Summary` section it opens with up to date with the revised video (write one if the report has
 none). That section is the client's: short lines, one sentence each, in the plain words of your
 progress notes, with no file, tool, model or provider name, no command and no cost in it.

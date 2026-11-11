@@ -19,6 +19,10 @@ one real session on the production options, about $0.01 of Haiku and no paid too
      The Bash tool's own background mode is switched off in jobs, so this is the only way a
      job overlaps its batch with other work, and the time gates rest on it.
 
+It also proves the live view (engine/agent/activity.py) where a fake stream cannot: the CLI inside the
+box sends the model's answer as it is written (partial messages), so a step shows before its call is
+issued, and every step is closed when the session ends.
+
 The session runs in a job's box (engine/sandbox/), as every production job does. It passes when the
 job stayed one continuous turn, nothing moved to the background or was refused, the budget denied
 the paid call at the desk, the take named by a path inside the job was quoted before it was denied,
@@ -45,6 +49,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from claude_agent_sdk import ResultMessage, SystemMessage  # noqa: E402
 
+from engine.agent.activity import ActivityFeed  # noqa: E402
 from engine.agent.session import AGENT_TOOLS, AgentSession, anthropic_api_key, cli_switches  # noqa: E402
 from engine.sandbox.box import AgentBox, sandbox_problem  # noqa: E402
 from lib import job_ledger  # noqa: E402
@@ -134,6 +139,17 @@ async def run() -> int:
             tools = list((message.data or {}).get("tools") or [])
 
     os.environ.setdefault("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    # The live view, as a job has it; the raw events it is fed are counted on the way.
+    feed = ActivityFeed(work / "journal.jsonl")
+    partial = {"events": 0}
+    feed_event = feed.stream_event
+
+    def counted(event, parent_tool_use_id=None) -> None:
+        partial["events"] += 1
+        feed_event(event, parent_tool_use_id)
+
+    feed.stream_event = counted  # type: ignore[method-assign]
+    journal: list[dict] = []
     try:
         async with AgentBox(agent_dir=work, project_dir=project, model="claude-haiku-5-5", claude_cap_usd=0.45,
                             cli_switches=cli_switches(), api_key=anthropic_api_key(REPO_ROOT)) as box:
@@ -149,14 +165,24 @@ async def run() -> int:
                 cli_path=box.cli_path,
                 box_env=box.session_env(),
                 settings_json=box.settings_json,
+                activity=feed,
             )
             outcome = await asyncio.wait_for(session.run(prompt(project)), timeout=480)
+        import json as _json
+        journal = [_json.loads(line) for line in (work / "journal.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
         denials = job_ledger.summarize(job_ledger.read_entries(work)).denials
         fetched = (work / "web.log").read_text(encoding="utf-8") if (work / "web.log").is_file() else ""
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
     text = "\n".join(results)
+    kinds = [entry.get("kind") for entry in journal]
+    steps: dict[str, list[dict]] = {}
+    for entry in journal:
+        if entry.get("kind") == "activity":
+            steps.setdefault(str(entry.get("id")), []).append(entry)
+    labels = {entries[-1].get("label") for entries in steps.values()}
+    calls = kinds.count("tool")
     checks = {
         "the session succeeded": outcome.succeeded,
         "one continuous turn": turns == 1,
@@ -174,11 +200,20 @@ async def run() -> int:
         # Well under the stand-in batch's own length: the call returned while the batch ran on.
         "the detached batch started without holding its call": len(launch_seconds) == 1 and launch_seconds[0] < BATCH_SECONDS - 2,
         "one waiting call collected the batch and its exit line": "the batch made its files" in text and "BURST EXIT 0" in text,
+        # The live view: the answer arrives as it is written, so a step is there before its call is issued.
+        "the model's answer arrived as it was being written": partial["events"] > 20,
+        "a step showed before its call was issued": "activity" in kinds and "tool" in kinds
+        and kinds.index("activity") < kinds.index("tool"),
+        "every call of the session is a step, and none is left running": len(steps) >= max(1, calls - 2)
+        and all(entries[-1].get("state") in ("done", "gone", "failed") for entries in steps.values()),
+        "the page that was read shows by its host, the batch as the shoot": "Reading example.com" in labels
+        and "Starting the shoot" in labels and "Waiting for the shoot to finish" in labels,
     }
     for name, passed in checks.items():
         print(f"{'PASS' if passed else 'FAIL'}  {name}")
     held = f", the launch call held the session {launch_seconds[0]:.1f} s" if launch_seconds else ""
     print(f"cost ${outcome.total_cost_usd:.4f}, {outcome.num_turns} model calls{held}")
+    print(f"live view: {partial['events']} partial events, {len(steps)} steps for {calls} calls: " + "; ".join(sorted(str(l) for l in labels)))
     return 0 if all(checks.values()) else 1
 
 

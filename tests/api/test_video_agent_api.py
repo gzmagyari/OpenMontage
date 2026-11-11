@@ -27,7 +27,7 @@ from claude_agent_sdk import (
 
 import engine.agent.session as agent_session
 from api.main import create_app
-from tests.api.helpers import record_tool_call
+from tests.api.helpers import POST, record_tool_call, write_posting
 
 pytestmark = pytest.mark.asyncio
 
@@ -50,6 +50,9 @@ class FakeSDK:
         self.hang_from_call = None
         self.export_from_call = 1
         self.request_ids: dict[str, list[str]] = {}  # tool -> what its provider call returned
+        self.write_post = True    # the run leaves its post text beside the export
+        self.write_cover = True   # ...and its cover picture
+        self.answer_post = True   # the follow-up that asks for a missing post text writes it
         self.notes: dict[str, str] = {}  # tool -> what it left for the operator
 
     def install(self, monkeypatch):
@@ -61,6 +64,14 @@ class FakeSDK:
             yield SystemMessage(subtype="init", data={
                 "session_id": session_id, "apiKeySource": fake.api_key_source,
                 "model": options.model, "tools": ["Bash", "Read"]})
+            if "the text the client posts with it is missing" in prompt:
+                # The one follow-up of a finished video: it writes the post text and nothing else.
+                if fake.answer_post:
+                    write_posting(agent_session.Path(_project_dir(fake.calls[0]["prompt"])), cover=False)
+                yield ResultMessage(subtype="success", duration_ms=100, duration_api_ms=90, is_error=False,
+                                    num_turns=8, session_id=options.resume or session_id, total_cost_usd=0.24,
+                                    result="done")
+                return
             if fake.hang or (fake.hang_from_call and len(fake.calls) >= fake.hang_from_call):
                 await asyncio.sleep(3600)
             yield AssistantMessage(
@@ -94,6 +105,7 @@ class FakeSDK:
                 (artifacts / "cost_log.json").write_text(
                     json.dumps([{"item": "fal_avatar take1", "usd": 0.88},
                                 {"item": "tts", "usd": 0.02}]), encoding="utf-8")
+                write_posting(agent_session.Path(project), post=fake.write_post, cover=fake.write_cover)
                 yield AssistantMessage(content=[TextBlock(text="Exported the final video.")],
                                        model=options.model)
             yield ResultMessage(subtype=fake.subtype, duration_ms=1234, duration_api_ms=1000,
@@ -619,6 +631,7 @@ async def test_revise_ledger_counts_only_the_revisions_own_spend(settings, monke
         exports.mkdir(parents=True, exist_ok=True)
         (exports / name).write_bytes(b"fake-mp4-bytes")
         (project / "RUN_REPORT.md").write_text("# report", encoding="utf-8")
+        write_posting(project)
         yield AssistantMessage(content=[TextBlock(text="Exported the final video.")], model=options.model)
         yield ResultMessage(subtype="success", duration_ms=10, duration_api_ms=10, is_error=False,
                             num_turns=2, session_id=session_id, total_cost_usd=0.05 + 0.03 * (len(prompts) - 1),
@@ -672,9 +685,11 @@ class RevisionSDK:
                 record_tool_call(options, "fal_elevenlabs_tts", 0.01, model="eleven-v3", output=f"/p/hook{run}.mp3")
                 if fake.export:
                     (exports / f"video_rev{run}.mp4").write_bytes(b"fake-mp4-bytes")
+                    write_posting(project)
             else:
                 record_tool_call(options, "fal_avatar", 0.88, model="h3max-acting", output="/p/take1.mp4")
                 (exports / "video.mp4").write_bytes(b"fake-mp4-bytes")
+                write_posting(project)
             yield AssistantMessage(content=[TextBlock(text="Done with this run.")], model=options.model)
             total = round(fake.session_cost.get(options.resume, 0.0) + (0.03 if options.resume else 0.20), 4)
             fake.session_cost[session_id] = total
@@ -807,3 +822,109 @@ async def test_ten_parallel_video_jobs(agent_client, fake_sdk):
     for jid in ids:
         files = (await agent_client.get(f"/v1/jobs/{jid}/files")).json()["files"]
         assert any(f["name"] == "video.mp4" for f in files)
+
+
+# -- what a video is posted with: its cover picture and its post text ------------------------------
+async def test_a_finished_video_comes_with_its_cover_and_its_post_text(agent_client, fake_sdk):
+    response = await agent_client.post("/v1/videos", json={"prompt": "A cold brew ad"})
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["status"] == "completed", data.get("error")
+    assert data["result"]["post"] == POST
+    assert data["result"]["cover"]["name"] == "cover.jpg" and data["result"]["cover"]["content_type"] == "image/jpeg"
+    cover = await agent_client.get(f"/v1/jobs/{data['id']}/files/cover.jpg")
+    assert cover.status_code == 200 and cover.content.startswith(b"\xff\xd8\xff")
+    assert len(fake_sdk.calls) == 1 and data["warnings"] == []
+    brief = fake_sdk.calls[0]["prompt"].replace("\\", "/")
+    assert "exports/cover.jpg" in brief and "artifacts/post.json" in brief and "`kit cover --at <second>`" in brief
+
+
+async def test_a_video_without_post_text_gets_one_follow_up_in_its_session(agent_client, fake_sdk):
+    """A finished video is never failed or made again for its post text: the same session is asked
+    once, and what that cost is on the job."""
+    fake_sdk.write_post = False
+    response = await agent_client.post("/v1/videos", json={"prompt": "A cold brew ad", "options": {"language": "es"}})
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["status"] == "completed", data.get("error")
+    assert len(fake_sdk.calls) == 2
+    follow = fake_sdk.calls[1]
+    assert follow["options"].resume == "sess-1" and follow["options"].fork_session is False
+    assert "post.json" in follow["prompt"] and "language (es)" in follow["prompt"]
+    assert "change nothing else in the project" in follow["prompt"]
+    assert data["result"]["post"] == POST and data["result"]["video"]["name"] == "video.mp4"
+    assert not any("post text" in warning for warning in data["warnings"])
+    # A resumed session reports what it cost since it began: the follow-up's figure is the job's.
+    items = {line["item"]: line["usd"] for line in data["cost"]["lines"]}
+    assert items["claude agent"] == 0.24 and data["result"]["agent"]["cost_usd"] == 0.24
+
+
+async def test_a_follow_up_that_writes_nothing_leaves_the_video_and_says_so(agent_client, fake_sdk):
+    fake_sdk.write_post = False
+    fake_sdk.answer_post = False
+    response = await agent_client.post("/v1/videos", json={"prompt": "A cold brew ad"})
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["status"] == "completed", data.get("error")
+    assert len(fake_sdk.calls) == 2, "one follow-up, never a loop"
+    assert data["result"]["post"] is None and data["result"]["video"]["name"] == "video.mp4"
+    assert any("has no post text" in warning for warning in data["warnings"])
+
+
+async def test_a_video_whose_cover_cannot_be_made_still_completes(agent_client, fake_sdk):
+    """The director made no cover, and the fake export is no video a frame could be taken from."""
+    fake_sdk.write_cover = False
+    response = await agent_client.post("/v1/videos", json={"prompt": "A cold brew ad"})
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["status"] == "completed", data.get("error")
+    assert data["result"]["cover"] is None and "cover" not in data["result"]["files"]
+    assert any(warning.startswith("no cover picture") for warning in data["warnings"])
+
+
+# -- the style of a video ---------------------------------------------------------------------------
+async def test_the_mention_style_reaches_the_brief_and_a_revision_keeps_it(agent_client, fake_sdk):
+    created = await agent_client.post("/v1/videos", json={"prompt": "A cold brew ad", "options": {"style": "mention"}})
+    assert created.status_code == 202, created.text
+    parent = await _wait_terminal(agent_client, created.json()["id"])
+    assert parent["status"] == "completed", parent.get("error")
+    brief = fake_sdk.calls[0]["prompt"]
+    assert "## The style of this video: a mention (no call to action, no offer)" in brief
+    assert "like the video, it carries no call to action and no offer wording" in brief
+
+    revised = await agent_client.post(f"/v1/jobs/{parent['id']}/revise", json={"feedback": "A bigger hook"})
+    child = await _wait_terminal(agent_client, revised.json()["id"])
+    assert child["status"] == "completed", child.get("error")
+    assert "This video is in the mention style" in fake_sdk.calls[1]["prompt"]
+
+
+async def test_a_video_is_a_direct_ad_unless_asked_otherwise(agent_client, fake_sdk):
+    created = await agent_client.post("/v1/videos", json={"prompt": "A cold brew ad"})
+    parent = await _wait_terminal(agent_client, created.json()["id"])
+    brief = fake_sdk.calls[0]["prompt"]
+    assert "The style of this video" not in brief and "it may end on the video's call to action" in brief
+    revised = await agent_client.post(f"/v1/jobs/{parent['id']}/revise", json={"feedback": "A bigger hook"})
+    await _wait_terminal(agent_client, revised.json()["id"])
+    assert "mention style" not in fake_sdk.calls[1]["prompt"]
+    refused = await agent_client.post("/v1/videos", json={"prompt": "x y z", "options": {"style": "testimonial"}})
+    assert refused.status_code == 422
+
+
+# -- the live view: every step in plain words -------------------------------------------------------
+async def test_the_chat_stream_carries_every_step_in_plain_words(agent_client, fake_sdk):
+    response = await agent_client.post("/v1/videos", json={"prompt": "A cold brew ad"})
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    steps: dict[str, list[dict]] = {}
+    for event in data["transcript"]["events"]:
+        if event["kind"] == "activity":
+            steps.setdefault(event["id"], []).append(event)
+    assert steps, "the stream has activity entries"
+    labels = {events[-1]["label"] for events in steps.values()}
+    # The two generation calls come from the tool desk's ledger, with their own start and end.
+    assert {"Recording the voice", "Filming take 1"} <= labels
+    for events in steps.values():
+        assert events[0]["state"] == "started" and events[-1]["state"] in ("done", "failed", "gone"), events
+        assert "seconds" in events[-1] or events[-1]["state"] == "gone"
+        for event in events:
+            assert set(event) <= {"at", "kind", "id", "state", "code", "label", "seconds", "age"}
+            # Never a tool, a model, a provider, a file, a command or money.
+            assert not re.search(r"fal|eleven|h3max|python|\.mp[34]|\.py|/|\$|_", event["label"]), event
+    # The raw calls are still there for the operator, and the client's two kinds beside them.
+    kinds = {event["kind"] for event in data["transcript"]["events"]}
+    assert {"assistant", "tool", "tool_result", "activity"} <= kinds

@@ -88,6 +88,12 @@ curl -X POST "$API/v1/videos" -H "Authorization: Bearer $TOKEN" \
 # -> 202 {"id": "job_...", "status": "running", ...}
 ```
 
+`options.style` chooses how the video speaks about the product. `"promote"` (the default) is a
+direct ad: it ends on a call to action. `"mention"` presents and praises the product just as
+fully, and never pushes the viewer to act: no "click", "buy", "go to" or "link in bio", no web
+address shown as a place to go, no discount or deadline, and no end card, spoken or on screen.
+A revision or a resume keeps the style of the video it continues.
+
 **1b. Or build the job up as a draft** - create empty, attach and edit at your own pace, then
 start. Nothing runs (and nothing is spent) until the start call:
 
@@ -130,6 +136,29 @@ while True:
     time.sleep(5)
 ```
 
+The stream holds the raw session (`tool` and `tool_result` events carry commands, paths and
+tool names: they are for you) and two kinds of event made for your customer's screen:
+
+- `assistant`: the director's own sentences. The brief asks it to keep file, tool and model
+  names, commands and costs out of them; filter them once more before you show them.
+- `activity`: every step in plain words, from a fixed list of labels (never a tool, model or
+  provider name, a file, a command or money):
+
+  ```json
+  {"kind": "activity", "id": "t-12", "state": "started", "code": "plan", "label": "Writing the plan"}
+  {"kind": "activity", "id": "d-15", "state": "started", "code": "take", "label": "Filming take B", "age": 2}
+  {"kind": "activity", "id": "d-15", "state": "done", "code": "take", "label": "Filming take B", "seconds": 21}
+  ```
+
+  One step keeps one `id`: replace what you show for it when a new event with that id arrives.
+  `state` is `started` (it may come again with a more exact `label`), `done` or `failed` (with
+  `seconds`, how long the step took), or `gone` (drop it: it was nothing worth showing, such as
+  a second of thinking). A `started` step that began earlier says how many seconds ago in
+  `age`, so a running timer can start from the right place. `code` names the kind of step, for
+  an icon. Steps come from the session's own work (from the moment the director starts writing
+  a call) and from the generation calls of its background batch, each with its real start and
+  end. Poll every second or two for a view that moves.
+
 **3. Download** - `job["result"]["video"]["name"]` is the deliverable; `GET /v1/jobs/{id}/files`
 lists it alongside `RUN_REPORT.md` (the agent's own production report) and the transcripts. The
 report opens with a `## Summary` section written for your customer: a few plain sentences about
@@ -142,6 +171,18 @@ NAME=$(curl -s -H "Authorization: Bearer $TOKEN" "$API/v1/jobs/$JOB_ID?transcrip
        | python -c "import sys, json; print(json.load(sys.stdin)['result']['video']['name'])")
 curl -H "Authorization: Bearer $TOKEN" -o final.mp4 "$API/v1/jobs/$JOB_ID/files/$NAME"
 ```
+
+A finished job also carries what the video is posted with:
+
+- `result["cover"]`: the cover picture, a file entry like the video's (`cover.jpg`, a full-size
+  frame of the video that the director chose with `kit cover`; when it chose none, the frame one
+  second in). `null` only when no frame could be read.
+- `result["post"]`: `{"title", "description", "hashtags"}` in the video's language, written by
+  the director from the script and the product's real facts and following the video's style (a
+  `"mention"` video's post text has no call to action either). The title is at most 100
+  characters, the description at most 500, and there are at most 8 hashtags, each without its
+  `#`. `null` when the director wrote none even after the one follow-up it is given (the job
+  then has a warning saying so).
 
 **4. Revise** - feedback resumes the SAME agent session in the same project (assets are reused,
 only what the feedback touches is regenerated):

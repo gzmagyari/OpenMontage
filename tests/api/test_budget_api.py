@@ -23,7 +23,7 @@ import engine.agent.runner as agent_runner
 import engine.agent.session as agent_session
 from api.main import create_app
 from lib import job_ledger
-from tests.api.helpers import ledger_dir, record_tool_call
+from tests.api.helpers import ledger_dir, record_tool_call, write_posting
 
 pytestmark = pytest.mark.asyncio
 
@@ -115,6 +115,7 @@ class MeteredSDK:
                 {"item": "fal_elevenlabs_tts voiceover", "usd": 0.02},
                 {"item": "fal_avatar h3max-acting take1", "usd": fake.cost_log_usd},
             ]), encoding="utf-8")
+            write_posting(agent_session.Path(project))
             yield AssistantMessage(content=[TextBlock(text="Exported.")], model=options.model)
             yield ResultMessage(subtype="success", duration_ms=900, duration_api_ms=800,
                                 is_error=False, num_turns=4, session_id="sess-live",

@@ -27,6 +27,9 @@ class ReferenceIn(BaseModel):
         return self
 
 
+VideoStyle = Literal["promote", "mention"]
+
+
 class VideoOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -35,6 +38,12 @@ class VideoOptions(BaseModel):
     max_budget_usd: float | None = Field(default=None, gt=0, le=100)
     captions: bool = True
     music: bool = True
+    style: VideoStyle = Field(
+        default="promote",
+        description="How the video speaks about the product. 'promote' is a direct ad that ends on a call "
+                    "to action. 'mention' presents and praises the product just as fully, with no call to "
+                    "action and no offer wording, spoken or on screen. A revision or a resume keeps the "
+                    "style of the video it continues.")
 
 
 class VideoRequest(BaseModel):

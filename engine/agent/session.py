@@ -21,6 +21,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     RateLimitEvent,
     ResultMessage,
+    StreamEvent,
     SystemMessage,
     TextBlock,
     ThinkingBlock,
@@ -221,8 +222,13 @@ class AgentSession:
         cli_path: str | None = None,
         box_env: dict[str, str] | None = None,
         settings_json: str | None = None,
+        activity: Any = None,
     ) -> None:
         self.repo_root = repo_root
+        # The job's live view (engine/agent/activity.py). With it, the session asks for partial
+        # messages: a step then shows from the moment the model starts writing a tool call, not
+        # only once the call is written and issued.
+        self.activity = activity
         # A boxed session (engine/sandbox/box.py): the SDK starts the box's launcher, whose
         # environment is only the job's token; the box's own environment is in its spec.
         self.cli_path = cli_path
@@ -279,6 +285,8 @@ class AgentSession:
                 self._journal({"kind": "system", "text": f"API retry {data.get('attempt')}/"
                                                          f"{data.get('max_retries')} ({data.get('error_status')})"})
         elif isinstance(message, AssistantMessage):
+            # A helper's own calls (a subagent's) belong to the step of the call that started it.
+            own = not getattr(message, "parent_tool_use_id", None)
             for block in message.content or []:
                 if isinstance(block, TextBlock) and block.text and block.text.strip():
                     self._journal({"kind": "assistant", "text": block.text})
@@ -286,6 +294,8 @@ class AgentSession:
                 elif isinstance(block, ToolUseBlock):
                     self._journal({"kind": "tool", "name": block.name, "id": block.id,
                                    "input": _clip(block.input, 1500)})
+                    if self.activity is not None and own:
+                        self.activity.tool_called(block.id, block.name, block.input)
                     if self.on_tool:
                         self.on_tool(block.name, block.input if isinstance(block.input, dict) else {})
                 elif isinstance(block, ThinkingBlock):
@@ -297,6 +307,8 @@ class AgentSession:
                     self._journal({"kind": "tool_result", "tool_use_id": block.tool_use_id,
                                    "is_error": bool(block.is_error),
                                    "text": _clip(_tool_result_text(block.content), 2000)})
+                    if self.activity is not None:
+                        self.activity.tool_finished(block.tool_use_id)
         elif isinstance(message, RateLimitEvent):
             info = message.rate_limit_info
             try:
@@ -339,16 +351,25 @@ class AgentSession:
             # A tool result carrying a large file (an image read, a long log) overflows the
             # default 1 MiB transport buffer and kills the session; 32 MiB absorbs real runs.
             max_buffer_size=32 * 1024 * 1024,
+            include_partial_messages=self.activity is not None,
         )
         outcome = RunOutcome(session_id=self.resume)
         stream = sdk_query(prompt=prompt, options=options)
         try:
             async for message in stream:
+                if isinstance(message, StreamEvent):
+                    # The model's answer as it is being written: only the live view reads it. It is
+                    # never journaled, metered or kept (a job has thousands of these).
+                    if self.activity is not None:
+                        self.activity.stream_event(message.event, message.parent_tool_use_id)
+                    continue
                 self._transcript(message)
                 if self.on_message:
                     self.on_message(message)
                 self._record(message, outcome)
         finally:
+            if self.activity is not None:
+                self.activity.settle()
             aclose = getattr(stream, "aclose", None)
             if aclose is not None:
                 try:

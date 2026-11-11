@@ -7,6 +7,7 @@
   kit sheet [--draft]        one sheet of the telling frames, with layout findings
   kit mix                    the soundtrack: voice on the spine, music under it, -14 LUFS
   kit render [--name NAME]   the final video into exports/, verified
+  kit cover [--at SECONDS]   one frame of the finished video as exports/cover.jpg (the post's cover)
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         index = rest.index("--project")
         del rest[index:index + 2]
 
-    known = NODE_COMMANDS | {"init", "look", "voice", "mix"}
+    known = NODE_COMMANDS | {"init", "look", "voice", "mix", "cover"}
     if command in known and command != "init" and not (project / "composition").is_dir():
         print(f"kit: {project} is not a job's project directory (it has no composition/). "
               f"Run kit there, or pass --project DIR.", file=sys.stderr)
@@ -102,6 +103,23 @@ def main(argv: list[str] | None = None) -> int:
         length = f"{made['seconds']:.2f} s" if made["seconds"] else "the length of the voice"
         music = f" with {made['music']}" if made["music"] else ", no music"
         print(f"Mixed {made['voice_parts']} voice part(s){music} into {made['file']} ({length}). The edit uses it automatically.")
+        return 0
+
+    if command == "cover":
+        from lib.videokit import cover
+        raw = _option(rest, "at")
+        try:
+            at = float(raw) if raw is not None else None
+        except ValueError:
+            print(f"kit: --at takes a second of the video, such as 1.5 (got {raw!r})", file=sys.stderr)
+            return 2
+        try:
+            made = cover.make(project, at=at)
+        except cover.CoverError as exc:
+            print(f"kit: {exc}", file=sys.stderr)
+            return 2
+        print(f"Cover: the frame at {made['at']:.2f} s of {made['video']} is {made['file']} "
+              f"({made['width']}x{made['height']}). Look at it once: the face clear, the words on it readable.")
         return 0
 
     print(f"kit: unknown command {command!r}. Try `kit help`.", file=sys.stderr)

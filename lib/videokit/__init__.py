@@ -5,7 +5,8 @@ ready-made scenes live in ``remotion-composer/kit``; this package stages a job's
 prepares the voice (trim, word timings, the timing spine), builds the soundtrack, and
 forwards check / sheet / render to the Node side.
 
-One command, run in a project directory: ``kit init | look | voice | check | sheet | mix | render``.
+One command, run in a project directory:
+``kit init | look | voice | check | sheet | mix | render | cover``.
 """
 
 from __future__ import annotations

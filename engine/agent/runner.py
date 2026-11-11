@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import mimetypes
@@ -20,7 +21,8 @@ import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from engine.agent.brief import build_brief, build_revise_prompt
+from engine.agent.activity import ActivityFeed
+from engine.agent.brief import build_brief, build_post_prompt, build_revise_prompt, clean_style
 from engine.agent.budget import BudgetMeter
 from engine.agent.session import (AgentAuthError, AgentSession, AgentUnavailable, RunOutcome,
                                   anthropic_api_key, cli_switches)
@@ -37,6 +39,13 @@ _MAX_REFERENCE_MB = 100
 
 # How often a running job refreshes the budget file and the live ledger.
 _WATCH_SECONDS = 5.0
+# How often, between those, the live view looks for a generation call that started or ended.
+_ACTIVITY_SECONDS = 1.0
+# The text a video is posted with (artifacts/post.json), as far as a client is given it.
+_POST_TITLE_MAX = 100
+_POST_DESCRIPTION_MAX = 500
+_POST_HASHTAGS_MAX = 8
+_POST_HASHTAG_MAX = 40
 # How far the agent's own cost log may drift from the tools' recorded spend before a warning.
 _COST_LOG_TOLERANCE_USD = 0.05
 # The names the model's own cost line is billed under: Claude served directly, or a custom upstream.
@@ -131,6 +140,59 @@ def _repo_root() -> Path:
     from lib.paths import REPO_ROOT
 
     return Path(REPO_ROOT)
+
+
+# -- what is posted with the video ---------------------------------------------------
+def _plain(value: Any, limit: int) -> str:
+    """One line of text: no control characters, single spaces, cut at a word within the limit."""
+    text = re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", str(value) if isinstance(value, str) else "")).strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit + 1]
+    return (cut[:cut.rfind(" ")] if " " in cut[limit // 2:] else text[:limit]).rstrip(" ,;:")
+
+
+def clean_post(data: Any) -> dict[str, Any] | None:
+    """The post text as a client gets it: a title, a description and hashtags without the `#`.
+    None when there is nothing to post with."""
+    if not isinstance(data, dict):
+        return None
+    raw_tags = data.get("hashtags")
+    if isinstance(raw_tags, str):
+        raw_tags = re.split(r"[\s,]+", raw_tags)
+    hashtags: list[str] = []
+    for tag in raw_tags if isinstance(raw_tags, list) else []:
+        word = re.sub(r"[^\w]", "", str(tag) if isinstance(tag, str) else "", flags=re.UNICODE)[:_POST_HASHTAG_MAX]
+        if word and word.lower() not in {known.lower() for known in hashtags}:
+            hashtags.append(word)
+    post = {"title": _plain(data.get("title"), _POST_TITLE_MAX),
+            "description": _plain(data.get("description"), _POST_DESCRIPTION_MAX),
+            "hashtags": hashtags[:_POST_HASHTAGS_MAX]}
+    return post if post["title"] or post["description"] else None
+
+
+def read_post(project_dir: Path) -> dict[str, Any] | None:
+    try:
+        return clean_post(json.loads((project_dir / "artifacts" / "post.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
+async def _ensure_cover(ctx: JobContext, project_dir: Path, video: Path) -> Path | None:
+    """The cover picture of the video that is returned. The director makes it with `kit cover`;
+    when there is none, or a later render made it out of date, the frame is taken here (at the
+    second the last cover used, else one second in), so every video has its cover."""
+    from lib.videokit import cover
+
+    target = project_dir / cover.COVER_PATH
+    if cover.is_current(project_dir, video):
+        return target
+    try:
+        await asyncio.wait_for(asyncio.to_thread(cover.make, project_dir, video=video), timeout=150)
+        return target
+    except Exception as exc:  # a missing cover never costs a finished video
+        ctx.warn(f"no cover picture: {exc}")
+        return None
 
 
 # -- references --------------------------------------------------------------------
@@ -343,11 +405,16 @@ def _stage_composition_workspace(project_dir: Path, warn: Any) -> None:
 async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
                          resume: str | None, fork: bool = False, exports_baseline: dict[str, int] | None = None,
                          cost_log_baseline: list[tuple[str, float]] | None = None,
-                         claude_cost_baseline: float = 0.0) -> dict[str, Any]:
+                         claude_cost_baseline: float = 0.0,
+                         language: str = "en", style: str = "promote") -> dict[str, Any]:
     settings = ctx.settings
     agent_dir = (ctx.job_dir / "agent").resolve()
     agent_dir.mkdir(parents=True, exist_ok=True)
     session_file = agent_dir / "session_id.txt"
+    # The live view: every step in plain words, in the same journal as the director's sentences.
+    # A restarted job's earlier generation calls are already in it.
+    feed = ActivityFeed(agent_dir / "journal.jsonl")
+    feed.skip_ledger(len(job_ledger.read_entries(agent_dir)))
     # A resume of this job (POST /v1/jobs/{id}/resume) continues here, whatever kind of job it was.
     (agent_dir / "project_dir.txt").write_text(str(project_dir), encoding="utf-8")
     if not resume:
@@ -376,7 +443,9 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
 
     def sync_ledger() -> job_ledger.LedgerState:
         nonlocal ledger_items, denials_seen, notes_seen
-        state = job_ledger.summarize(job_ledger.read_entries(agent_dir))
+        entries = job_ledger.read_entries(agent_dir)
+        feed.ledger(entries)
+        state = job_ledger.summarize(entries)
         # What a tool left for the operator (a voice that fell back to a stock one, say).
         for note in state.notes[notes_seen:]:
             ctx.warn(note)
@@ -442,8 +511,15 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
 
     async def watch(box=None) -> None:
         """Keeps the money state current during a long tool call; returns if spend passes the ceiling."""
+        due = loop.time() + _WATCH_SECONDS
         while True:
-            await asyncio.sleep(_WATCH_SECONDS)
+            await asyncio.sleep(min(_ACTIVITY_SECONDS, _WATCH_SECONDS))
+            if loop.time() < due:
+                # Between the money checks only the live view moves: a generation call that started
+                # or ended at the tool desk shows within about a second.
+                feed.ledger(job_ledger.read_entries(agent_dir))
+                continue
+            due = loop.time() + _WATCH_SECONDS
             try:
                 sync_budget()
             except OSError as exc:
@@ -531,6 +607,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             cli_path=box.cli_path if box else None,
             box_env=box.session_env() if box else None,
             settings_json=box.settings_json if box else None,
+            activity=feed,
         )
         run_task = asyncio.create_task(session.run(session_prompt))
         watch_task = asyncio.create_task(watch(box))
@@ -565,6 +642,8 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             elif stopped := _stop_leftovers(agent_dir):
                 ctx.log(f"stopped {stopped} processes the session left running")
             sync_ledger()
+            # Nothing of an ended session stays "running" in the live view.
+            feed.close()
 
     def exported() -> list[Path]:
         exports_dir = project_dir / "exports"
@@ -594,6 +673,21 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         # Assets it already paid for are still there: the job's deadline and ledger carry on.
         ctx.warn("the agent stopped before exporting a video; its session was resumed once")
         outcome = await run_session(_UNFINISHED_PROMPT, outcome.session_id)
+    if outcome.succeeded and exported() and read_post(project_dir) is None:
+        # The video is there; only the text it is posted with is missing or unreadable. The same
+        # session writes it in one short follow-up. Whatever becomes of that, the video stands.
+        try:
+            follow = await run_session(
+                build_post_prompt(project_dir=project_dir, language=language, style=style), outcome.session_id)
+            # A resumed session reports its cost since it began: the later figure is the whole of it.
+            outcome = dataclasses.replace(
+                outcome, total_cost_usd=max(outcome.total_cost_usd, follow.total_cost_usd),
+                num_turns=max(outcome.num_turns, follow.num_turns),
+                session_id=follow.session_id or outcome.session_id)
+        except Exception as exc:
+            log.warning("the post-text follow-up of job %s did not finish: %s", ctx.job.id, exc)
+        if read_post(project_dir) is None:
+            ctx.warn("the video has no post text: the director did not write a usable artifacts/post.json")
 
     if outcome.total_cost_usd:
         # A resumed session reports Claude's cost since the session began, so a revision
@@ -676,6 +770,13 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
         await asyncio.to_thread(shutil.copy2, path, ctx.files_dir / path.name)
         files[path.stem] = _file_entry(ctx.files_dir / path.name)
     main_video = files[videos[-1].stem]
+    # What the video is posted with: its cover picture (a frame of the video) and its post text.
+    cover_entry = None
+    cover_path = await _ensure_cover(ctx, project_dir, videos[-1])
+    if cover_path is not None:
+        await asyncio.to_thread(shutil.copy2, cover_path, ctx.files_dir / "cover.jpg")
+        cover_entry = files["cover"] = _file_entry(ctx.files_dir / "cover.jpg")
+    post = read_post(project_dir)
     for extra in (project_dir / "RUN_REPORT.md", agent_dir / "journal.jsonl", agent_dir / "transcript.jsonl"):
         if extra.is_file():
             await asyncio.to_thread(shutil.copy2, extra, ctx.files_dir / extra.name)
@@ -683,6 +784,8 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
 
     return {
         "video": main_video,
+        "cover": cover_entry,
+        "post": post,
         "files": files,
         "session_id": outcome.session_id,
         "project_dir": str(project_dir),
@@ -712,6 +815,7 @@ async def run_video(ctx: JobContext) -> dict[str, Any]:
         language=str(options.get("language") or "en"),
         captions=bool(options.get("captions", True)),
         music=bool(options.get("music", True)),
+        style=clean_style(options.get("style")),
     )
     agent_dir = ctx.job_dir / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -723,7 +827,9 @@ async def run_video(ctx: JobContext) -> dict[str, Any]:
     prompt = brief if not resume else _RESTARTED_PROMPT
 
     async with ctx.resource("agent", "agent session"):
-        return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=resume)
+        return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=resume,
+                                    language=str(options.get("language") or "en"),
+                                    style=clean_style(options.get("style")))
 
 
 def _read_text(path: Path) -> str | None:
@@ -731,6 +837,18 @@ def _read_text(path: Path) -> str | None:
         return path.read_text(encoding="utf-8").strip() or None
     except OSError:
         return None
+
+
+def _root_options(store: Any, job: Any) -> dict[str, Any]:
+    """The options of the video job a chain of revisions and resumes began with: its language and
+    its style are the chain's."""
+    for _ in range(50):
+        if job is None:
+            return {}
+        if job.kind == "video" or not job.parent_job_id:
+            return dict((job.request or {}).get("options") or {})
+        job = store.get(job.parent_job_id) if store is not None else None
+    return {}
 
 
 def _session_claude_total(store: Any, job: Any) -> float:
@@ -776,8 +894,10 @@ async def run_resume(ctx: JobContext) -> dict[str, Any]:
     async with ctx.resource("agent", "agent session"):
         # No exports baseline: a video the stopped run already exported is this video, and the
         # newest export is the one returned.
+        root = _root_options(store, parent)
         return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=resume, fork=fork,
-                                    cost_log_baseline=baseline, claude_cost_baseline=claude_baseline)
+                                    cost_log_baseline=baseline, claude_cost_baseline=claude_baseline,
+                                    language=str(root.get("language") or "en"), style=clean_style(root.get("style")))
 
 
 async def run_revise(ctx: JobContext) -> dict[str, Any]:
@@ -795,12 +915,17 @@ async def run_revise(ctx: JobContext) -> dict[str, Any]:
     agent_dir = ctx.job_dir / "agent"
     session_file = agent_dir / "session_id.txt"
     own_session = session_file.read_text(encoding="utf-8").strip() if session_file.is_file() else None
+    # A revision keeps the language and the style of the video it revises.
+    root = _root_options(ctx.services.store, parent)
+    style = clean_style(root.get("style"))
     prompt = _RESTARTED_PROMPT if own_session else build_revise_prompt(
-        feedback=ctx.job.request.get("feedback", ""), project_dir=project_dir, budget_usd=ctx.max_budget_usd)
+        feedback=ctx.job.request.get("feedback", ""), project_dir=project_dir, budget_usd=ctx.max_budget_usd,
+        style=style)
     baseline = _cost_log_baseline(ctx, project_dir)
     exports = _exports_baseline(ctx, project_dir)
     parent_claude = float((parent.result.get("agent") or {}).get("cost_usd") or 0.0)
     async with ctx.resource("agent", "agent session"):
         return await _run_agent_job(ctx, prompt=prompt, project_dir=project_dir, resume=own_session or session_id,
                                     fork=not own_session, exports_baseline=exports, cost_log_baseline=baseline,
-                                    claude_cost_baseline=parent_claude)
+                                    claude_cost_baseline=parent_claude,
+                                    language=str(root.get("language") or "en"), style=style)

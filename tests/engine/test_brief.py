@@ -143,6 +143,87 @@ def test_a_revision_speaks_a_changed_line_in_the_videos_own_voice():
     assert "never speak one line in another voice" in revise
 
 
+def test_a_video_is_a_direct_ad_unless_the_client_chose_the_mention_style():
+    # "promote" is the default and its brief is the one every video had before the choice existed.
+    promote = _brief()
+    assert _brief(style="promote") == promote and _brief(style="something else") == promote
+    assert "The style of this video" not in promote
+    assert "a deliberate closing beat under the CTA" in " ".join(promote.split())
+
+
+def test_the_mention_style_sells_the_product_without_a_push():
+    # The owner's words (2026-11-11): "The presenter still has to market what he describes ... he simply
+    # describes the product and mentions it many times, as much as needed where needed, but he doesn't
+    # force you / urge you to literally buy something or go to a site ... without using the usual
+    # promotional wording (like 10% off or something) and not mentioning CTA stuff".
+    brief = _brief(style="mention")
+    section = " ".join(brief.split("## The style of this video: a mention (no call to action, no offer)", 1)[1]
+                       .split("\n## ", 1)[0].split())
+    # It is still a promotion of the product, said as often as it helps.
+    assert "This video still sells" in section
+    assert "names it as often as that helps, wherever it helps" in section
+    assert "The product's NAME is said and shown freely" in section
+    # No push to act, spoken or on screen, and no address to go to.
+    assert "No call to action of any kind" in section and "in the script, on screen and in the post text" in section
+    for push in ("click", "tap", "go to", "visit", "buy", "order", "sign up", "download", "try", '"link in bio"'):
+        assert push in section, push
+    assert "its web address is not shown or spoken as a place to go" in section
+    # No deal talk.
+    assert 'No offer wording: no discount, coupon code, deadline, "limited time" or price pushed as a deal' in section
+    # No card for it either, and no softer push in its place.
+    assert "No card that asks for an action and no end card" in section
+    assert "do not put a softer version of the same push in their place" in section
+    # The presenter stays a host: no customer story, no results of their own.
+    assert "never a customer, and never someone reporting results of their own" in section
+    # It comes before the locked decisions and outranks a stage skill's or a look's call to action.
+    assert brief.index("## The style of this video") < brief.index("## Locked production decisions")
+    assert "Where a stage skill or a kit look asks for a call to action, an offer line, a CTA card or an end card" in section
+    # The one rule of the brief that names the call to action no longer does.
+    assert "under the CTA" not in brief and "a deliberate closing beat." in " ".join(brief.split())
+    assert "\u2014" not in brief and "\u2013" not in brief
+
+
+def test_every_video_is_made_with_its_cover_and_its_post_text():
+    brief = _brief(language="de")
+    section = " ".join(brief.split("## What is posted with the video", 1)[1].split("\n## ", 1)[0].split())
+    # The cover is a frame of the finished video, chosen from the sheet and looked at.
+    assert "`kit cover --at <second>` saves that frame of the finished video" in section
+    assert "/data/projects/job_x/exports/cover.jpg" in section.replace("\\", "/")
+    assert "Look at the picture once" in section
+    # The post text: three fields, in the video's language, with limits a short-video post can take.
+    assert "/data/projects/job_x/artifacts/post.json" in section.replace("\\", "/")
+    assert '`{"title": "...", "description": "...", "hashtags": ["...", "..."]}`' in section
+    assert "language (de)" in section and "at most 90 characters" in section and "at most 300 characters" in section
+    assert "four to six, each without the `#` and without spaces" in section
+    assert "Nothing in it that the site and the request do not back up" in section
+    assert "it may end on the video's call to action" in section
+    # Both are part of what must exist before the director stops.
+    assert "and so must the cover picture and the post text" in " ".join(brief.split())
+    # A mention's post text has no push either.
+    mention = " ".join(_brief(style="mention").split())
+    assert "like the video, it carries no call to action and no offer wording" in mention
+    assert "it may end on the video's call to action" not in mention
+
+
+def test_a_revision_keeps_the_style_and_brings_the_cover_and_the_post_text_up_to_date():
+    from engine.agent.brief import build_post_prompt, build_revise_prompt
+
+    args = dict(feedback="Tighten the hook", project_dir=Path("/data/projects/job_plan"), budget_usd=1.2)
+    revise = " ".join(build_revise_prompt(**args).split())
+    assert "mention style" not in revise
+    assert "make the cover again from the new export (`kit cover --at <second>`)" in revise
+    assert "post.json (the post's title, description and hashtags) up to date" in revise
+    mention = " ".join(build_revise_prompt(**args, style="mention").split())
+    assert "This video is in the mention style" in mention
+    assert "no call to action, no offer wording and no end card" in mention
+    assert "The revision keeps that, unless the feedback itself asks for one" in mention
+    # The one follow-up of a finished video that has no post text: the same rules, nothing else touched.
+    follow = build_post_prompt(project_dir=Path("/data/projects/job_plan"), language="fr", style="mention")
+    assert "change nothing else in the project, and stop" in follow and "language (fr)" in follow
+    assert "/data/projects/job_plan/artifacts/post.json" in follow.replace("\\", "/")
+    assert "no call to action and no offer wording" in follow and '"hashtags"' in follow
+
+
 def test_the_voice_skill_says_what_the_tool_needs_and_what_never_to_do():
     from tools.audio.voiceover_tts import VoiceoverTTS
 

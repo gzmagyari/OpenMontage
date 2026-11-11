@@ -66,6 +66,8 @@ STEPS = [
     ("check", "kit check"),
     ("sheet", "kit sheet"),
     ("render", "kit render --name boxcheck"),
+    # The picture the video is posted with: one frame of the export.
+    ("cover", "kit cover --at 0.8 && test -s exports/cover.jpg && test -s work/kit/cover.json"),
 ]
 
 RUNNER = r'''
@@ -81,6 +83,19 @@ for name, command in json.loads(os.environ["OM_CHECK_STEPS"]):
         break
 print(json.dumps(report))
 '''
+
+
+def _cover_size(path: Path) -> tuple[int, int] | None:
+    """(width, height) of the cover when it is a JPEG, else None."""
+    if not path.is_file() or path.read_bytes()[:3] != b"\xff\xd8\xff":
+        return None
+    done = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                           "-of", "csv=p=0", str(path)], capture_output=True, text=True)
+    try:
+        width, height = done.stdout.strip().split(",")[:2]
+        return int(width), int(height)
+    except ValueError:
+        return None
 
 
 def stand_in_upstream(request: httpx.Request) -> httpx.Response:
@@ -143,6 +158,7 @@ async def run() -> int:
             ("the export is H.264, the edit's size, BT.709",
              (video.get("codec_name"), video.get("width"), video.get("height"), video.get("color_space")) == ("h264", 540, 960, "bt709")),
             ("the export has sound", any(s.get("codec_type") == "audio" for s in probe.get("streams", []))),
+            ("the cover is a JPEG frame of the export, at its size", _cover_size(project / "exports" / "cover.jpg") == (540, 960)),
             (f"the render kept Chrome's temporary files in {'memory' if want_temp == 'memory' else 'the job folder, as switched'}"
              f" (it says: {record.get('chrome_temp')})", record.get("chrome_temp") == want_temp),
         ]
