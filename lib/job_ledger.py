@@ -96,6 +96,7 @@ class LedgerState:
     items: list[CostItem] = field(default_factory=list)
     denials: list[dict[str, Any]] = field(default_factory=list)
     tools_started: list[str] = field(default_factory=list)  # every tool that really ran, in order
+    notes: list[str] = field(default_factory=list)  # what tools left for the operator, in order
     recorded: bool = False  # the ledger has any entry at all
 
     @property
@@ -146,6 +147,8 @@ def summarize(entries: list[dict[str, Any]]) -> LedgerState:
             state.tools_started.append(str(entry.get("tool")))
         elif event == "finish":
             open_calls.pop(str(entry.get("id")), None)
+            if entry.get("note"):
+                state.notes.append(str(entry["note"]))
             cost = _usd(entry.get("cost_usd"))
             if cost:
                 rids = entry.get("request_ids")
@@ -214,11 +217,14 @@ def begin_call(directory: Path, *, tool: str, provider: str | None, inputs: Any,
 
 
 def finish_call(directory: Path, call: ToolCall, *, cost_usd: Any, success: Any,
-                request_ids: Any = None) -> None:
+                request_ids: Any = None, note: Any = None) -> None:
     """Record what the call really cost. A successful call that reports no cost is recorded at its
     quote: a paid call is never free. ``request_ids`` are the provider's ids for this call's
-    submissions, kept so settlement can reconcile the estimate against real billing events."""
+    submissions, kept so settlement can reconcile the estimate against real billing events.
+    ``note`` is a sentence the tool left for the operator (it becomes a warning of the job)."""
     entry = {"event": "finish", "id": call.id, **call.details, "cost_usd": _usd(cost_usd), "success": bool(success)}
+    if isinstance(note, str) and note.strip():
+        entry["note"] = note.strip()[:400]
     if isinstance(request_ids, (list, tuple)):
         rids = [str(r) for r in request_ids if r]
         if rids:

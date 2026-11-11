@@ -123,12 +123,22 @@ Target: vertical 9:16, 1080x1920, about {duration_seconds:g} seconds, language: 
    needs someone else: {card}. Keep that exact person consistent in every shot, and never fall
    back to the stock look-alike presenter (young woman, shoulder-length brown hair, hoop
    earrings, window light) that unguided runs default to.
-4. If the video has a voice: audio first, ONE voice for the whole video. Generate all spoken
-   lines with `fal_elevenlabs_tts` (model_id eleven-v3; pick one fitting voice and keep it for
-   every line) and save each as `{project}/assets/audio/<line id>.mp3`, the line ids being the
-   ones in the edit (rule 10). Then run `kit voice`: it tightens the pauses, times every word of
-   the script and lays the lines end to end. Never hand-roll audio filters and never trim or
-   split a line yourself.
+4. If the video has a voice: audio first, ONE voice for the whole video, made for this video's
+   presenter. Write a short voice description: the speaker's age and gender, where they are from
+   (the natural accent of the video's language; another accent only when the request asks for
+   one), the sound of the voice and how they talk (a person talking to a friend on a phone
+   video, never an announcer). Never the name or the likeness of a real person. Then speak ALL
+   lines with ONE call of tool `voiceover_tts` (read its skill in `.agents/skills/voice-design/`
+   before the call): `voice_description`, `gender` ("woman" or "man"), `age` (as your plan
+   states it), `language` "{language}", and `lines`, each with its `id` from the edit (rule 10),
+   its `text` and its `output_path` `{project}/assets/audio/<line id>.mp3`. It designs the voice,
+   speaks every line with it (about $0.07 for a 30 second script) and keeps the voice for this
+   video; when no designed voice can be had it speaks the lines with a stock voice of the same
+   gender and age and says so in its answer, which is fine: carry on, and keep it out of your
+   notes and the summary. To speak a line again later, call it with just that line: it uses
+   this video's voice. Then run `kit voice`: it tightens the pauses, times
+   every word of the script and lays the lines end to end. Never hand-roll audio filters and
+   never trim or split a line yourself.
 5. Every on-camera talking shot comes from tool `fal_avatar` - read its skill in
    `.agents/skills/fal-avatar/` before the first call and follow its audio contract and prompt
    rules. The default take model is `"h3max-turbo"` (one audio-conditioned acting generation
@@ -188,7 +198,7 @@ assets, the reference files) - then write the complete video plan to
 angle and the muted-viewable hook (what the first frame shows and why it stops a scroller); the
 exact script with second marks; a numbered shot list in which every shot names what is on screen,
 where its visual comes from (avatar take, animated still, real site screenshot) and how it moves;
-the presenter and the voice; the music direction; the look (which starter, and how you restyle it
+the presenter and the voice description, side by side; the music direction; the look (which starter, and how you restyle it
 for this brand); every piece of on-screen text; and the expected paid calls. Write the shot list
 itself as `{project}/composition/edit.json` (rule 10) - the plan file keeps the reasoning and
 points to it - and run `kit check --draft` on it BEFORE the first paid generation call: it catches a
@@ -256,7 +266,11 @@ feedback with the smallest change that honors it: reuse every asset that is stil
 only what the feedback touches, and keep every locked production decision from the original brief
 (one voice, fal_avatar takes for on-camera speech - model h3max-turbo, and a delivered take's lips are
 fixed in place before the take is regenerated - h3_max_video motion on scenes without a take,
-{IMAGE_MODEL} at {IMAGE_QUALITY} quality for any new image, review gates). When
+{IMAGE_MODEL} at {IMAGE_QUALITY} quality for any new image, review gates). A spoken line that
+changes is spoken again with `voiceover_tts`, called with just that line (its `id`, `text` and
+`output_path`): it uses the video's own voice. If it answers that the voice no longer exists, leave
+the spoken words as they are, apply the rest of the feedback and say so in the summary; never speak
+one line in another voice. When
 {project}/composition/edit.json exists the video was made with the video kit: change the edit, the
 look or a scene, run `kit voice` again only if a spoken line changed, then `kit check`, `kit sheet`
 and `kit render --name <a new name>`. Otherwise edit the existing composition code as it is.

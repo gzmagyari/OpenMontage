@@ -16,6 +16,9 @@ Do not send those models to the legacy text-to-speech endpoint.
 
 Inspect the OpenMontage registry before choosing an authentication path.
 
+- A video's whole voiceover is made with `voiceover_tts`: one voice designed for the
+  presenter, every line in one call. Read `.agents/skills/voice-design/` first. The
+  tools below are for single lines outside that.
 - Prefer `fal_elevenlabs_tts` when it is available. It provides Eleven v3,
   Multilingual v2, and Turbo v2.5 through the centrally managed fal.ai
   connection; no separate ElevenLabs credential is needed.

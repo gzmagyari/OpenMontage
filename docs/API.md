@@ -228,6 +228,36 @@ least 2 GB free and writes which it was into `renders/kit_render.json` (`chrome_
 in `remotion-composer/kit/engine/browserTemp.ts`. `KIT_CHROME_TEMP=disk` on the container switches
 this off for every job.
 
+## A voice for each video
+
+A video with a spoken script gets one voice, made for its presenter (`tools/audio/voiceover_tts.py`,
+`lib/eleven_voices.py`). The director describes the speaker; the tool designs a voice from that
+description (ElevenLabs Voice Design), saves it, and speaks every line with Eleven v4 Turbo. Set
+`ELEVENLABS_VOICE_API_KEY` to switch it on. Without the key every video is spoken by a stock voice
+through fal, chosen by the presenter's gender and age.
+
+- **The voice is kept as long as the video.** It is saved on the ElevenLabs account under the name
+  `om-<installation id>-<job id>`, so a revision speaks a changed line in the same voice. The
+  cleanup that removes a job after `JOB_TTL_HOURS` removes its voice in its next round (every 15
+  minutes); a deleted job's voice goes the same way.
+- **What the account limits, and what happens then.** Voices saved at once: a new video that finds
+  no slot free removes the oldest voice this installation keeps (never one younger than 20 minutes,
+  never a voice it did not make). Voices created a month, characters a month, a refused
+  description, an error or a slow answer: the lines are spoken by the stock voice instead, all of
+  them, and the job gets a warning that says why. A video never has two voices.
+- **A revision of a video whose voice is gone** (removed to make room) keeps its spoken words and
+  says so. It does not speak one line in another voice.
+- **Cost.** ElevenLabs reports each spoken line in its own units, and a design counts the
+  characters of its sample text. The tool adds them up and turns them into dollars at
+  `ELEVENLABS_USD_PER_1K_UNITS` (default 0.35). That line of a job's cost is the tool's own figure:
+  unlike a fal line, it cannot be checked against the provider's bill call by call. About $0.07 for
+  a 30 second script.
+- **Two installations on one account** (a local one and a server) each need their own
+  `OPENMONTAGE_INSTANCE_ID`; each then removes only its own voices. They still share the account's
+  slots and monthly counts.
+- The key under the name `ELEVENLABS_API_KEY` works too, but that name also switches on the direct
+  ElevenLabs tools (single lines, music, soundtracks) for every job, on the same allowance.
+
 ## Design notes
 
 - `engine/jobs/` - disk-backed job store (atomic writes), FIFO resource limiters that queue

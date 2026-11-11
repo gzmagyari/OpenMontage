@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO_ROOT))
 import httpx  # noqa: E402
 
 from engine.sandbox.box import LAUNCH, AgentBox, sandbox_problem, secret_names  # noqa: E402
+from lib import job_ledger  # noqa: E402
 
 MODEL = "claude-haiku-5-5"
 STAND_IN_KEY = "stand-in-anthropic-key-outside-the-box"
@@ -87,6 +88,11 @@ def desk(payload):
 
 report["desk_note"] = attempt(lambda: desk({"op": "note", "tool": "box_check", "event": "start", "id": "1"}))
 report["desk_local_tool"] = attempt(lambda: desk({"op": "run", "tool": "audio_mixer", "inputs": {}}).get("error"))
+# A video's voiceover, asked for on a budget of one cent: the desk must know its price and refuse it.
+voice = {"voice_description": "A woman in her thirties from Ohio. Warm, clear voice.", "gender": "woman", "age": "30s",
+         "lines": [{"id": "A", "text": "This line is never spoken: the budget of this check is one cent.",
+                    "output_path": project + "/assets/audio/A.mp3"}]}
+report["desk_voice"] = attempt(lambda: desk({"op": "run", "tool": "voiceover_tts", "inputs": voice}).get("error"))
 report["nested_namespace"] = attempt(lambda: subprocess.run(["unshare", "--user", "true"], capture_output=True).returncode)
 libc = ctypes.CDLL(None, use_errno=True)
 libc.syscall(425, 1, 0)
@@ -114,6 +120,7 @@ async def run() -> int:
     for path in (agent_dir, project, neighbour):
         path.mkdir(parents=True)
     (neighbour / "private.txt").write_text("another job's file", encoding="utf-8")
+    job_ledger.write_budget(agent_dir, 0.01)  # one cent: no paid call of this check can be bought
     os.environ[MARKER] = "provider-key-outside-the-box"
     probe = PROBE.replace("MARKER_NAME", MARKER).replace("MODEL_NAME", MODEL)
     try:
@@ -163,6 +170,8 @@ async def run() -> int:
         ("the web proxy refuses ports other than 80 and 443", " 403 " in f" {report['proxy_port']} "),
         ("the desk answers the box", report["desk_note"] == {"ok": True}),
         ("the desk runs only paid tools", "runs inside the job" in str(report["desk_local_tool"])),
+        ("the desk prices a video's voiceover and holds it to the budget",
+         "BUDGET REACHED" in str(report["desk_voice"]) and "voiceover_tts" in str(report["desk_voice"])),
         ("the box cannot create boxes of its own", report["nested_namespace"] not in (0, "0")),
         ("the container's refused system calls stay refused", report["io_uring_errno"] == 1),
     ]

@@ -188,6 +188,29 @@ def test_every_tool_that_ran_is_noted_in_order(ledger_dir):
     assert state_of(ledger_dir).tools_started == ["fake_free", "fake_paid", "fake_selector"]
 
 
+class NotingTool(BaseTool):
+    name = "fake_noting"
+    provider = "elevenlabs"
+
+    def estimate_cost(self, inputs):
+        return 0.05
+
+    def execute(self, inputs):
+        data = {"operator_note": inputs["note"]} if "note" in inputs else {}
+        return ToolResult(success=True, cost_usd=0.05, data=data)
+
+
+def test_what_a_tool_leaves_for_the_operator_is_kept_with_its_cost(ledger_dir):
+    """A voiceover that fell back to a stock voice still succeeds; the operator has to hear of it."""
+    assert NotingTool().execute({}).success
+    assert NotingTool().execute({"note": "  voiceover_tts used the stock voice Bill: no slot is free  "}).success
+    assert NotingTool().execute({"note": "x" * 900}).success
+    assert NotingTool().execute({"note": 7}).success and NotingTool().execute({"note": "   "}).success
+    state = state_of(ledger_dir)
+    assert state.notes == ["voiceover_tts used the stock voice Bill: no slot is free", "x" * 400]
+    assert state.spent_usd == pytest.approx(0.25) and len(state.items) == 5, "a note changes nothing about the cost"
+
+
 def test_a_failed_call_costs_what_it_reported(ledger_dir):
     assert PaidTool().execute({"success": False, "cost": 0.0}).success is False
     assert state_of(ledger_dir).spent_usd == 0.0

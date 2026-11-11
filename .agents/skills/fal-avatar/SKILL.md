@@ -5,7 +5,8 @@ description: Acted talking takes from one portrait plus a prepared audio file vi
 
 # fal_avatar - audio-first talking takes
 
-The presenter's voice is an audio FILE you provide (make it with a TTS tool first, one fixed
+The presenter's voice is an audio FILE you provide (make it first: in a video job with
+`voiceover_tts`, one voice designed for the presenter; elsewhere with a TTS tool, one fixed
 voice per person for the whole video). `fal_avatar` turns that file plus one portrait into a
 talking take whose delivered soundtrack is that file **verbatim** - so the voice can never
 drift between takes, which is the main failure mode of video models that invent their own

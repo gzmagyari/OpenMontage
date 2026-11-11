@@ -108,3 +108,51 @@ def test_the_brief_treats_the_budget_as_production_fuel():
     brief = _brief().replace("\n  ", " ")
     assert "production fuel, not a savings target" in brief
     assert "an under-delivery, not an economy" in brief
+
+
+def test_the_voice_is_designed_for_the_presenter_in_one_call():
+    # Until video 718 the director picked a stock voice by name, unchecked: a man in his sixties
+    # could speak with a young woman's voice, and the stock voices end with 2026.
+    brief = " ".join(_brief(language="es").split())
+    rule = brief.split("4. If the video has a voice:", 1)[1].split("5. Every on-camera talking shot", 1)[0]
+    assert "ONE voice for the whole video, made for this video's presenter" in rule
+    assert "ONE call of tool `voiceover_tts`" in rule and "`.agents/skills/voice-design/`" in rule
+    assert '`voice_description`, `gender` ("woman" or "man"), `age`' in rule and '`language` "es"' in rule
+    assert "/data/projects/job_x/assets/audio/<line id>.mp3" in rule
+    # The accent is the language's own unless the client asked, and no real person is imitated.
+    assert "another accent only when the request asks for one" in rule
+    assert "Never the name or the likeness of a real person" in rule
+    # A stock voice is an answer the director works with, and the client is not told of it.
+    assert "a stock voice of the same gender and age" in rule and "keep it out of your notes and the summary" in rule
+    assert "call it with just that line: it uses this video's voice" in rule
+    assert "Then run `kit voice`" in rule
+    # The single-line tool is not how a video's voice is made any more.
+    assert "fal_elevenlabs_tts" not in brief and "eleven-v3" not in brief
+    # The plan sets the two descriptions of one person next to each other.
+    assert "the presenter and the voice description, side by side" in brief
+
+
+def test_a_revision_speaks_a_changed_line_in_the_videos_own_voice():
+    revise = " ".join(build_revise_prompt_text().split())
+    assert "A spoken line that changes is spoken again with `voiceover_tts`, called with just that line" in revise
+    assert "it uses the video's own voice" in revise
+    # A voice that was removed with age is no reason to use another one.
+    assert "If it answers that the voice no longer exists, leave the spoken words as they are" in revise
+    assert "never speak one line in another voice" in revise
+
+
+def test_the_voice_skill_says_what_the_tool_needs_and_what_never_to_do():
+    from tools.audio.voiceover_tts import VoiceoverTTS
+
+    assert VoiceoverTTS.agent_skills == ["voice-design"]
+    skill = (Path(__file__).resolve().parents[2] / ".agents" / "skills" / "voice-design" / "SKILL.md").read_text(encoding="utf-8")
+    assert skill.startswith("---\nname: voice-design\n")
+    for words in ("`voiceover_tts`", '"voice_description"', '"gender"', '"age"', '"lines"', "`new_voice: true`",
+                  "Another accent ONLY when the request asks for it", "Never name a real person",
+                  "the video's voice no longer exists", "Do not speak one line in another voice",
+                  "do not mention it to the client"):
+        assert words in skill, words
+    assert "\u2014" not in skill and "\u2013" not in skill
+    # Every input the skill shows is one the tool takes.
+    properties = VoiceoverTTS.input_schema["properties"]
+    assert {"voice_description", "gender", "age", "language", "lines", "model", "new_voice"} <= set(properties)

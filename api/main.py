@@ -32,6 +32,10 @@ def _build(settings: Settings, runners: dict | None, services: Any) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         settings.ensure_dirs()
+        # This installation's own id, for the names of the voices it keeps on ElevenLabs.
+        from lib import eleven_voices
+
+        eleven_voices.ensure_instance_id(settings.data_dir)
         if not settings.api_token:
             log.warning("OPENMONTAGE_API_TOKEN is not set: the API accepts unauthenticated requests")
         store = JobStore(settings.jobs_dir)

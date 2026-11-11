@@ -301,10 +301,10 @@ def _budget_execute(fn: Callable) -> Callable:
         if call.denied:
             return ToolResult(success=False, error=call.denied)
 
-        def finish(cost_usd: Any, success: Any, request_ids: Any = None) -> None:
+        def finish(cost_usd: Any, success: Any, request_ids: Any = None, note: Any = None) -> None:
             try:
                 job_ledger.finish_call(directory, call, cost_usd=cost_usd, success=success,
-                                       request_ids=request_ids)
+                                       request_ids=request_ids, note=note)
             except Exception:
                 pass
 
@@ -318,7 +318,8 @@ def _budget_execute(fn: Callable) -> Callable:
             _BUDGET_DEPTH.value = 0
         data = getattr(result, "data", None)
         finish(getattr(result, "cost_usd", None), getattr(result, "success", None),
-               request_ids=data.get("request_ids") if isinstance(data, dict) else None)
+               request_ids=data.get("request_ids") if isinstance(data, dict) else None,
+               note=data.get("operator_note") if isinstance(data, dict) else None)
         return result
 
     wrapper._budget_metered = True  # type: ignore[attr-defined]

@@ -167,7 +167,7 @@ at once:
 waiting). The Bash tool's own background mode is switched off in jobs, and a foreground
 call would hold the session until the last take lands. One process for the whole
 burst, chained inside - TTS first
-(concurrent, each line saved at `assets/audio/<line id>.mp3`), then `kit voice`, then
+(one `voiceover_tts` call for every line, each saved at `assets/audio/<line id>.mp3`), then `kit voice`, then
 takes / b-roll / music / image concurrently as their inputs land, each writing its
 result JSON and cost-log entries exactly as above. The presenter's portrait is among the
 first calls: the takes need it, and so does every still that shows the presenter or part

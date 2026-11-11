@@ -339,7 +339,31 @@ class JobManager:
                 self.cleanup_expired()
             except Exception:
                 log.exception("job cleanup failed")
+            try:
+                await asyncio.to_thread(self.cleanup_voices)
+            except Exception:
+                log.exception("voice cleanup failed")
             await asyncio.sleep(900)
+
+    def cleanup_voices(self) -> list[str]:
+        """Remove the voices kept on ElevenLabs for videos that are no longer kept here. A video's
+        voice lives as long as the video (a revision speaks a changed line in it) and goes with
+        it: a job removed by `cleanup_expired` or deleted by hand no longer shows in the store.
+        One listing a round; a removal that fails is tried again next round. Without an
+        ElevenLabs key there is nothing to do."""
+        from lib import eleven_voices
+
+        key = eleven_voices.api_key()
+        if not key:
+            return []
+        try:
+            removed = eleven_voices.sweep(key, (job.id for job in self.store.all()))
+        except eleven_voices.ElevenError as exc:
+            log.warning("voice cleanup: %s", exc)
+            return []
+        if removed:
+            log.info("voice cleanup: removed the voices of %d videos that are gone", len(removed))
+        return removed
 
     def cleanup_expired(self) -> int:
         """Delete finished jobs JOB_TTL_HOURS after they ended, and abandoned drafts. A stopped job

@@ -107,6 +107,24 @@ def test_a_provider_box_gets_provider_settings_but_nothing_that_drives_the_serve
     assert secret_names({"FAL_KEY": "x", "EMPTY_KEY": "", "GPG_KEY": "y", "PATH": "/bin"}) == ["FAL_KEY"]
 
 
+def test_a_paid_tool_is_told_which_video_it_works_for(tmp_path, monkeypatch):
+    """A video's voice is found again by its project (tools/audio/voiceover_tts.py). The desk says
+    which project that is; the agent's own box is not told anything new."""
+    monkeypatch.setenv("FAL_KEY", "fal-real")
+    monkeypatch.setenv("ELEVENLABS_VOICE_API_KEY", "eleven-real")
+    monkeypatch.setenv("OPENMONTAGE_INSTANCE_ID", "abc123")
+    project = tmp_path / "projects" / "job_1"
+    box = AgentBox(agent_dir=tmp_path / "agent", project_dir=project, model="claude-haiku-5-5",
+                   claude_cap_usd=1.0, cli_switches={}, api_key="k")
+    env = box._provider_env()
+    assert env["OPENMONTAGE_PROJECT_DIR"] == str(project)
+    assert env["ELEVENLABS_VOICE_API_KEY"] == "eleven-real" and env["OPENMONTAGE_INSTANCE_ID"] == "abc123"
+    assert env["FAL_KEY"] == "fal-real" and "OPENMONTAGE_TOOL_DESK" not in env
+    inside = box._box_env()
+    assert inside["ELEVENLABS_VOICE_API_KEY"] == "held-by-the-desk" and "eleven-real" not in inside.values()
+    assert "OPENMONTAGE_PROJECT_DIR" not in inside and "OPENMONTAGE_INSTANCE_ID" not in inside
+
+
 def test_usage_is_read_from_event_streams_and_json_bodies():
     stream = UsageReader(streaming=True)
     event = {"type": "message_start", "message": {"id": "msg_1", "usage": {"input_tokens": 100}}}
@@ -175,6 +193,17 @@ def test_the_desk_keeps_the_providers_request_ids_with_the_cost(desk, tmp_path):
     desk.answer = {"success": True, "cost_usd": 0.1, "data": None}
     asyncio.run(desk._run({"tool": "fake_paid", "inputs": {"output_path": "u.mp4"}}))
     assert job_ledger.summarize(job_ledger.read_entries(tmp_path)).items[1].request_ids == ()
+
+
+def test_the_desk_keeps_what_a_tool_left_for_the_operator(desk, tmp_path):
+    desk.answer = {"success": True, "cost_usd": 0.03,
+                   "data": {"operator_note": "voiceover_tts used the stock voice Bill: no voice slot is free"}}
+    asyncio.run(desk._run({"tool": "fake_paid", "inputs": {}}))
+    desk.answer = {"success": True, "cost_usd": 0.03, "data": {}}
+    asyncio.run(desk._run({"tool": "fake_paid", "inputs": {}}))
+    state = job_ledger.summarize(job_ledger.read_entries(tmp_path))
+    assert state.notes == ["voiceover_tts used the stock voice Bill: no voice slot is free"]
+    assert state.spent_usd == pytest.approx(0.06)
 
 
 def test_the_desk_holds_a_call_to_the_budget(desk, tmp_path):

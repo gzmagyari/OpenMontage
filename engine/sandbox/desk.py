@@ -166,7 +166,8 @@ class ToolDesk:
         data = result.get("data")
         job_ledger.finish_call(self.ledger_dir, call, cost_usd=result.get("cost_usd"),
                                success=result.get("success"),
-                               request_ids=data.get("request_ids") if isinstance(data, dict) else None)
+                               request_ids=data.get("request_ids") if isinstance(data, dict) else None,
+                               note=data.get("operator_note") if isinstance(data, dict) else None)
         return result
 
     def _as_seen_from_here(self, inputs: dict[str, Any], cwd: str) -> dict[str, Any]:

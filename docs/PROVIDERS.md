@@ -509,6 +509,12 @@ machine-readable Atlas page and should be reconfirmed before a paid batch.
 **Tools unlocked:** `elevenlabs_tts`, `music_gen`
 **Env var:** `ELEVENLABS_API_KEY`
 
+**A voice for each video:** `voiceover_tts` designs one voice for a video's presenter from a
+description, speaks every line with Eleven v4 Turbo and keeps the voice for the video's
+revisions. It reads its own key name, `ELEVENLABS_VOICE_API_KEY`, so a server can give a key to
+that tool alone (`ELEVENLABS_API_KEY` is read too). When the account has no voice left to give,
+it speaks the lines with a stock voice through fal. See `docs/API.md`, "A voice for each video".
+
 #### Setup
 
 1. Go to [elevenlabs.io](https://elevenlabs.io) and click **Sign up**

@@ -364,6 +364,7 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     written_budget: float | None = None
     ledger_items: list[job_ledger.CostItem] = []
     denials_seen = 0
+    notes_seen = 0
 
     def sync_budget() -> None:
         # POST /v1/jobs/{id}/budget changes the job's options; the tools read this file.
@@ -374,8 +375,12 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
             written_budget = budget
 
     def sync_ledger() -> job_ledger.LedgerState:
-        nonlocal ledger_items, denials_seen
+        nonlocal ledger_items, denials_seen, notes_seen
         state = job_ledger.summarize(job_ledger.read_entries(agent_dir))
+        # What a tool left for the operator (a voice that fell back to a stock one, say).
+        for note in state.notes[notes_seen:]:
+            ctx.warn(note)
+        notes_seen = len(state.notes)
         meter.actuals_total = state.spent_usd
         if state.items != ledger_items:
             ledger_items = state.items

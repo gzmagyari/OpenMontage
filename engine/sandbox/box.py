@@ -162,6 +162,11 @@ class AgentBox:
             env[name] = "held-by-the-desk"
         return env
 
+    def _provider_env(self) -> dict[str, str]:
+        """What a paid tool's box gets: the server's provider settings and keys, and which video
+        it works for (a video's voice is found again by its project, tools/audio/voiceover_tts.py)."""
+        return {**provider_env(os.environ), "OPENMONTAGE_PROJECT_DIR": str(self.project_dir)}
+
     def _spec(self) -> dict:
         return {
             "ro": ["/usr", "/etc", str(REPO_ROOT), "/opt"],
@@ -190,7 +195,7 @@ class AgentBox:
         self.web = WebProxy(socket_path=self.sockets / "web.sock", log_path=self.agent_dir / "web.log")
         self.desk = ToolDesk(socket_path=self.sockets / "desk.sock", ledger_dir=self.agent_dir,
                              project_dir=self.project_dir, shared_tmp=self.tmp, specs_dir=self.box_dir / "calls",
-                             provider_env=provider_env(os.environ), log_path=self.agent_dir / "desk.log")
+                             provider_env=self._provider_env(), log_path=self.agent_dir / "desk.log")
         try:
             await self.gateway.start()
             await self.web.start()

@@ -50,6 +50,7 @@ class FakeSDK:
         self.hang_from_call = None
         self.export_from_call = 1
         self.request_ids: dict[str, list[str]] = {}  # tool -> what its provider call returned
+        self.notes: dict[str, str] = {}  # tool -> what it left for the operator
 
     def install(self, monkeypatch):
         fake = self
@@ -68,7 +69,8 @@ class FakeSDK:
                                       input={"command": "python -c 'fal_elevenlabs_tts'"})],
                 model=options.model)
             record_tool_call(options, "fal_elevenlabs_tts", 0.02, model="eleven-v3", output="/p/vo.mp3",
-                             request_ids=fake.request_ids.get("fal_elevenlabs_tts"))
+                             request_ids=fake.request_ids.get("fal_elevenlabs_tts"),
+                             note=fake.notes.get("fal_elevenlabs_tts"))
             yield UserMessage(content=[ToolResultBlock(tool_use_id="t1", content="tts ok", is_error=False)])
             yield AssistantMessage(
                 content=[ToolUseBlock(id="t2", name="Bash",
@@ -254,11 +256,59 @@ async def test_a_job_with_no_request_ids_at_all_still_says_so(agent_client, fake
     assert all(line["estimated"] for line in data["cost"]["lines"] if line["provider"] == "fal.ai")
 
 
+async def test_what_a_tool_left_for_the_operator_becomes_a_warning_of_the_job(agent_client, fake_sdk):
+    """A voiceover that fell back to a stock voice is a finished, successful call. Only the
+    operator needs to know, and the job's warnings are where an operator looks."""
+    note = "voiceover_tts used the stock voice Bill: this month's voice creations are used up"
+    fake_sdk.notes = {"fal_elevenlabs_tts": note}
+    response = await agent_client.post("/v1/videos", json={
+        "prompt": "A 15s TikTok ad for example.com with a presenter",
+        "options": {"duration_seconds": 15, "max_budget_usd": 5},
+    })
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["status"] == "completed", data.get("error")
+    assert data["warnings"].count(note) == 1, data["warnings"]
+
+
+async def test_the_voices_of_videos_that_are_gone_are_removed_from_elevenlabs(agent_client, monkeypatch):
+    """A video's voice is kept on ElevenLabs for as long as the video is kept here, and goes with
+    it. Nothing else on the account is touched, and without a key nothing is asked."""
+    from tests.tools.eleven_fake import FakeEleven
+
+    manager = agent_client.app.state.manager
+    eleven = FakeEleven()
+    monkeypatch.setattr("requests.request", eleven.request)
+    monkeypatch.setenv("OPENMONTAGE_INSTANCE_ID", "test")
+    for name in ("ELEVENLABS_VOICE_API_KEY", "ELEVENLABS_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    assert manager.cleanup_voices() == [] and eleven.calls == []
+
+    monkeypatch.setenv("ELEVENLABS_VOICE_API_KEY", "eleven-test-key")
+    job = (await agent_client.post("/v1/videos", json={"prompt": "An ad for example.com", "draft": True})).json()
+    kept = eleven.add_voice(f"om-test-{job['id']}", age_seconds=90_000)
+    gone = eleven.add_voice("om-test-job_0123456789abcdef", age_seconds=300_000)
+    owner = eleven.add_voice("The owner's own narrator", age_seconds=9_000_000, category="professional")
+    assert manager.cleanup_voices() == ["job_0123456789abcdef"]
+    assert set(eleven.voices) == {kept, owner} and gone not in eleven.voices
+
+    # The video is removed here: its voice goes on the next round.
+    manager.store.delete(job["id"])
+    assert manager.cleanup_voices() == [job["id"]] and set(eleven.voices) == {owner}
+
+    # ElevenLabs being down is no reason for the cleanup round to fail.
+    def down(*_args, **_kwargs):
+        raise ConnectionError("down")
+
+    monkeypatch.setattr("requests.request", down)
+    assert manager.cleanup_voices() == []
+
+
 def test_stage_tracker_follows_the_tools_that_ran_and_never_regresses():
     from engine.agent.runner import StageTracker
 
     tracker = StageTracker()
     assert tracker.update("image_gen") is None, "images are part of the agent's preparation"
+    assert StageTracker().update("voiceover_tts") == ("voiceover", 20), "the one-call voiceover is the voice stage"
     assert tracker.update("fal_elevenlabs_tts") == ("voiceover", 20)
     assert tracker.update("fal_avatar") == ("talking shots", 40)
     # Revisiting an earlier stage's tool does not move the label backwards.

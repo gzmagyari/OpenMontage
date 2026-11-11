@@ -25,7 +25,7 @@ model must fail rather than silently substitute a different model.
 | Wan 3.0 | — | wan_fal_video, wan_atlas_video, wan_replicate_video |
 | H3 Max / H3 Max Turbo | — | h3_max_video (fal; Turbo is its default model) |
 | LTX-2.5 Fast / Pro | ltx_api_video | — |
-| Eleven v4 / v4 Turbo | elevenlabs_tts | fal_elevenlabs_tts (v4 only) |
+| Eleven v4 / v4 Turbo | elevenlabs_tts; voiceover_tts (a video's whole voiceover in a designed voice, v4 Turbo by default) | fal_elevenlabs_tts (v4 only) |
 | Gemini 3.8 Flash / Flash-Lite TTS | gemini_tts | — |
 | Lyria 3.5 | google_music | — |
 | Sonic 3.6 | cartesia_tts | — |
