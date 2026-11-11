@@ -155,7 +155,8 @@ tool names: they are for you) and two kinds of event made for your customer's sc
   `seconds`, how long the step took), or `gone` (drop it: it was nothing worth showing, such as
   a second of thinking). A `started` step that began earlier says how many seconds ago in
   `age`, so a running timer can start from the right place. `code` names the kind of step, for
-  an icon. Steps come from the session's own work (from the moment the director starts writing
+  an icon. A step that does two things names both, in the order it does them ("Writing the
+  shot list, checking the edit"). Steps come from the session's own work (from the moment the director starts writing
   a call) and from the generation calls of its background batch, each with its real start and
   end. Poll every second or two for a view that moves.
 

@@ -80,14 +80,17 @@ REAL_CALLS = [
      "Collecting real material from the site"),
     ("Bash", {"command": "cd /app; python - <<'E'\nfrom tools.tool_registry import registry\nregistry.discover()\nE"}, "Getting ready"),
     ("Bash", {"command": f"cd {P} && python -I - <<'E'\nfrom PIL import Image\nfs=['portrait_before']\nE"}, "Looking over the pictures"),
-    ("Read", {"file_path": "/tmp/refs_sheet.jpg"}, "Looking at the sheet of key frames"),
+    ("Read", {"file_path": "/tmp/refs_sheet.jpg"}, "Looking over the pictures"),
     ("Read", {"file_path": f"{P}/refs/01_product_shot.png"}, "Looking over the pictures"),
     ("Bash", {"command": f"cd {P} && cat composition/src/look/look.tsx | head -400"}, "Styling the look"),
     ("Bash", {"command": f"cd {P} && mkdir -p artifacts assets/audio && cat > composition/edit.json <<'E'\n{{}}\nE"}, "Writing the shot list"),
     ("Bash", {"command": f"cd {P} && python - <<'E'\nimport json\np='composition/edit.json'\nE\nkit check --draft"}, "Checking the edit"),
+    ("Bash", {"command": f"cd {P} && python - <<'E'\nimport json\np='composition/edit.json'\ne=json.load(open(p))\n"
+                         "e['main'][0]['zoom']=1.2\njson.dump(e,open(p,'w'),indent=1)\nE\nkit check --draft"},
+     "Adjusting the shot list, checking the edit"),
     ("Bash", {"command": f"cd {P} && cat > artifacts/video_plan.md <<'E'\n# Plan\nE"}, "Writing the plan"),
     ("Bash", {"command": f"cd {P} && cat > artifacts/video_plan.md <<'E'\n# Plan\nE\nnohup python work/burst.py > work/burst.out 2>&1 &"},
-     "Starting the shoot"),
+     "Writing the plan, starting the shoot"),
     ("Bash", {"command": f"cd {P} && until grep -q 'BURST EXIT' work/burst.out; do sleep 2; done; tail -5 work/burst.out"},
      "Waiting for the shoot to finish"),
     ("Write", {"file_path": f"{P}/work/burst.py", "content": "import fal"}, "Preparing the shoot"),
@@ -96,9 +99,13 @@ REAL_CALLS = [
     ("Bash", {"command": f"cd {P} && python - <<'E'\nimport json\nd=[{{\"category\":\"render_runtime\"}}]\nopen('artifacts/decision_log.json','w')\nE"},
      "Noting the decisions"),
     ("Bash", {"command": f"cd {P} && mkdir -p work/qc && for f in take_A take_B; do ffmpeg -v error -y -ss 0.5 -i assets/video/$f.mp4 -frames:v 1 work/qc/$f.jpg; done"},
+     "Checking the takes"),
+    ("Bash", {"command": f"cd {P} && ffmpeg -v error -y -ss 2 -i assets/video/broll_phone.mp4 -frames:v 1 /tmp/b.jpg"},
      "Checking frames of the footage"),
     ("Read", {"file_path": "/tmp/qc.jpg"}, "Looking at frames of the video"),
     ("Bash", {"command": f"cd {P} && for f in take_A take_B; do ffmpeg -hide_banner -i assets/video/$f.mp4 -af volumedetect -f null - 2>&1 | grep max_volume; done"},
+     "Checking the takes, checking the sound levels"),
+    ("Bash", {"command": f"cd {P} && ffmpeg -hide_banner -i assets/audio/mix.wav -af volumedetect -f null - 2>&1 | grep max_volume"},
      "Checking the sound levels"),
     ("Bash", {"command": f"cd {P} && kit mix 2>&1 | tail -8; kit check 2>&1 | tail -15; kit sheet 2>&1 | tail -5"},
      "Mixing the sound, checking the edit"),
@@ -112,7 +119,8 @@ REAL_CALLS = [
     ("Write", {"file_path": f"{P}/artifacts/post.json", "content": "{}"}, "Writing the post text"),
     ("Bash", {"command": f"cd {P} && cat > RUN_REPORT.md <<'E'\n## Summary\nE"}, "Writing the production notes"),
     ("Write", {"file_path": f"{P}/composition/src/scenes/PhoneDemo.tsx", "content": "x"}, "Building a custom scene"),
-    ("Edit", {"file_path": f"{P}/composition/edit.json", "old_string": "a", "new_string": "b"}, "Writing the shot list"),
+    ("Edit", {"file_path": f"{P}/composition/edit.json", "old_string": "a", "new_string": "b"}, "Adjusting the shot list"),
+    ("Write", {"file_path": f"{P}/composition/edit.json", "content": "{}"}, "Writing the shot list"),
     ("Read", {"file_path": f"{P}/artifacts/video_plan.md"}, "Reading the plan again"),
     ("Read", {"file_path": f"{P}/work/kit/voice.json"}, "Checking the timing"),
     ("Read", {"file_path": f"{P}/work/burst.out"}, "Checking on the shoot"),
@@ -132,6 +140,100 @@ REAL_CALLS = [
      "Making a piece of the video"),
     ("Bash", {"command": "cd /app; grep -n 'trim_silence' tools/avatar/fal_avatar.py | head -30"}, "Getting ready"),
     ("Bash", {"command": "fc-list : family | sort -u | head -40"}, "Styling the look"),
+    # Calls of two real videos of 2026-11-11 whose first labels said something the call did not do.
+    # A command is named by what it does, in the order it does it; reading a file is not writing it.
+    ("Bash", {"command": "cd " + P + " && mkdir -p refs assets/audio artifacts exports && python - <<'E'\nimport urllib.request\n"
+                         "base=\"https://lumabrew.example/demo/\"\nfor n in [\"cup_before\",\"cup_after\"]:\n"
+                         "    d=urllib.request.urlopen(base+n+\".jpg\").read(); open(\"refs/\"+n+\".jpg\",\"wb\").write(d)\nE\n"
+                         "cat composition/edit.json"},
+     "Collecting real material from the site"),
+    ("Bash", {"command": "cd " + P + " && python - <<'E'\nfrom PIL import Image\nims=[Image.open(f\"refs/{n}.jpg\") for n in [\"cup_before\"]]\n"
+                         "s=Image.new(\"RGB\",(1600,600)); s.save(\"/tmp/refs_sheet.jpg\")\nE\ncat composition/src/look/look.tsx"},
+     "Looking over the pictures"),
+    ("Bash", {"command": "cat .agents/skills/minimax-h3/SKILL.md; echo ====; sed -n 1,200p skills/pipelines/avatar-spokesperson/"
+                         "asset-director.md | grep -n -iE \"burst|parallel|portrait|edit\" | head -40"},
+     "Getting ready"),
+    ("Bash", {"command": "cd " + P + " && cat composition/edit.json; ls composition/src composition/src/look; "
+                         "cat composition/src/look/tokens.ts; ls work; which kit; python -c \"\nfrom tools.tool_registry import registry\n"
+                         "registry.discover()\n\""},
+     "Getting ready"),
+    ("Bash", {"command": "python - <<'E'\nfrom tools.tool_registry import registry\nregistry.discover()\nE\ncat " + P
+                         + "/composition/src/look/look.tsx"},
+     "Getting ready"),
+    ("Bash", {"command": "cd /tmp && mkdir -p shot && python - <<'E'\nfrom playwright.sync_api import sync_playwright\n"
+                         "with sync_playwright() as p:\n    pg=p.chromium.launch().new_page()\n"
+                         "    pg.goto(\"https://lumabrew.example\"); pg.screenshot(path=\"/tmp/shot/top.png\")\nE"},
+     "Collecting real material from the site"),
+    ("Bash", {"command": "cd " + P + "/composition/src/look && sed -n 150,400p look.tsx; cat index.ts | head -20"}, "Styling the look"),
+    ("Bash", {"command": "cd " + P + "/composition/src/look && python - <<'E'\nl=open(\"look.tsx\").read()\n"
+                         "l=l.replace(\"/** Chunky pill. */\",\"/** Rounded pill. */\")\nopen(\"look.tsx\",\"w\").write(l)\nE\n"
+                         "tail -3 ../../../work/burst.out"},
+     "Styling the look"),
+    ("Bash", {"command": "cd " + P + "; sed -i 's/\"for\": 1.8/\"for\": 1.0/' composition/edit.json; until grep -q \"BURST EXIT\" "
+                         "work/burst.out; do sleep 3; done; tail -8 work/burst.out; cat artifacts/cost_log.json"},
+     "Adjusting the shot list, waiting for the shoot to finish"),
+    ("Bash", {"command": "cd " + P + " && cat > composition/edit.json <<'E'\n{\"voice\": {\"lines\": [{\"id\": \"A\", \"text\": "
+                         "\"See artifacts/post.json and RUN_REPORT.md\"}]}}\nE\nkit check --draft 2>&1 | tail -5"},
+     "Writing the shot list, checking the edit"),
+    ("Bash", {"command": "cd " + P + " && cat > artifacts/video_plan.md <<'E'\n# Plan\nThe edit goes to composition/edit.json, the "
+                         "post text to artifacts/post.json, then the takes are checked with ffmpeg.\nE"},
+     "Writing the plan"),
+    ("Bash", {"command": "cd " + P + " && mkdir -p work && python - <<'E'\nfrom PIL import Image\n"
+                         "Image.open(\"refs/cup_after.jpg\").save(\"assets/images/cup_916.jpg\")\nE\ncat > work/burst.py <<'E'\n"
+                         "from tools.tool_registry import registry\nregistry.discover()\n"
+                         "r=registry._tools['fal_avatar'].execute({'output_path': 'assets/video/take_A.mp4'})\nE\n"
+                         "nohup sh -c 'python work/burst.py; echo \"BURST EXIT $?\"' > work/burst.out 2>&1 &"},
+     "Starting the shoot"),
+    ("Bash", {"command": "cd " + P + "; python - <<'E'\nimport json\njson.dump([{\"item\":\"voice\",\"usd\":0.05}],"
+                         "open(\"artifacts/cost_log.json\",\"w\"),indent=1)\nE\nkit mix 2>&1 | tail -8; kit check 2>&1 | tail -6"},
+     "Mixing the sound, checking the edit"),
+    ("Bash", {"command": "cd /app/remotion-composer/kit && grep -rn \"zoom\" scenes/BeforeAfter* | head -12; cd " + P
+                         + "/composition/src/look; sed -i \"s/fg: tokens.color.negative/fg: tokens.color.paper/\" tokens.ts"},
+     "Styling the look"),
+    ("Bash", {"command": "cd " + P + "; sed -i 's/\"zoom\": 0.08/\"zoom\": [1, 1.12]/' composition/edit.json; kit check 2>&1 | tail -6; "
+                         "kit sheet 2>&1 | tail -8"},
+     "Adjusting the shot list, checking the edit"),
+    ("Bash", {"command": "cd " + P + " && python - <<'E'\nimport json\ne=json.load(open(\"composition/edit.json\"))\n"
+                         "e[\"main\"][0][\"zoom\"]=1.2\njson.dump(e,open(\"composition/edit.json\",\"w\"),indent=1)\nE\nkit sheet 2>&1 | head -30"},
+     "Adjusting the shot list, making a sheet of the key frames"),
+    ("Bash", {"command": "cd " + P + " && python -c \"import json; print(json.load(open('composition/edit.json'))['main'])\""},
+     "Reading the shot list again"),
+    ("Bash", {"command": "cd " + P + " && mkdir -p work/qc && for t in A D; do d=$(ffprobe -v error -show_entries format=duration "
+                         "-of csv=p=0 assets/video/take_$t.mp4); echo \"$t $d $(ffmpeg -i assets/video/take_$t.mp4 -af volumedetect "
+                         "-f null - 2>&1 | grep max_volume)\"; done"},
+     "Checking the takes, checking the sound levels"),
+    ("Bash", {"command": "cd " + P + "; kit cover --at 2.3 2>&1 | tail -2\ncat > artifacts/post.json <<'E'\n"
+                         "{\"title\": \"A title\", \"description\": \"Words.\", \"hashtags\": [\"Lumabrew\"]}\nE"},
+     "Choosing the cover picture, writing the post text"),
+    ("Bash", {"command": "cd " + P + " && python - <<'E'\nimport json\npost={\"title\":\"A title\"}\n"
+                         "json.dump(post,open(\"artifacts/post.json\",\"w\"))\nopen(\"RUN_REPORT.md\",\"w\").write(\"## Summary\")\nE"},
+     "Writing the post text, writing the production notes"),
+    ("Bash", {"command": "cd " + P + " && kit render 2>&1 | tail -8; ls -la exports; kit cover --at 1.6 2>&1 | tail -3"},
+     "Rendering the final video"),
+    ("Bash", {"command": "cd " + P + " && cat work/burst.py | head -40"}, "Working on the video"),
+    # Three things in one command: the launch is never the one left out.
+    ("Bash", {"command": "cd " + P + " && sed -i 's/\"accent\": \"real\", //' composition/edit.json && cat > artifacts/video_plan.md <<'E'\n"
+                         "# Plan\nE\nnohup sh -c 'python work/burst.py; echo \"BURST EXIT $?\"' > work/burst.out 2>&1 &"},
+     "Adjusting the shot list, starting the shoot"),
+    # A script written and then run does what its lines do; a name that is only there is not an act.
+    ("Bash", {"command": "mkdir -p /tmp/om && cat > /tmp/om/tts.py <<'EOF'\nfrom tools.tool_registry import registry\nregistry.discover()\n"
+                         "r=registry._tools['fal_elevenlabs_tts'].execute({'text': 'Hello'})\nEOF\npython /tmp/om/tts.py"},
+     "Making a piece of the video"),
+    ("Bash", {"command": "cd /app; grep -n \"def init_project\" -A12 lib/checkpoint.py | head -30; which ffmpeg ffprobe node npx; "
+                         "ls ~/.cache/ms-playwright 2>/dev/null"},
+     "Getting ready"),
+    ("Bash", {"command": "cd " + P + "; pgrep -fa \"burst.py|remotion\" | head -3; cat > RUN_REPORT.md <<'EOF'\n# Report\n"
+                         "The video was rendered with kit render after kit check.\nEOF"},
+     "Writing the production notes"),
+    ("Bash", {"command": "python -c 'import os; fs=[\"artifacts/video_plan.md\",\"assets/video/take1.mp4\"]; "
+                         "print([os.stat(f).st_size for f in fs])'; stat -c %y " + P + "/artifacts/video_plan.md"},
+     "Reading the plan again"),
+    ("Bash", {"command": "cd " + P + "/composition/src/look && sed -i 's/<div>/<span>/' look.tsx"}, "Styling the look"),
+    ("Read", {"file_path": "/tmp/takes.jpg"}, "Looking at the takes"),
+    ("Read", {"file_path": f"{P}/assets/images/presenter.png"}, "Looking at the presenter's portrait"),
+    ("Read", {"file_path": f"{P}/assets/images/interior.png"}, "Looking at a picture"),
+    ("Read", {"file_path": f"{P}/work/qc/all.jpg"}, "Looking at frames of the video"),
+    ("Read", {"file_path": f"{P}/work/kit/sheet2.jpg"}, "Looking at the sheet of key frames"),
     ("Bash", {"command": "echo $((2+2))"}, "Working on the video"),
     ("Read", {}, "Working on the video"),
     ("SomethingNew", {"anything": 1}, "Working on the video"),
@@ -160,6 +262,7 @@ def test_the_kits_commands_read_as_a_list_and_the_render_wins():
 
 DESK_CALLS = [
     ("openai_image", "/p/assets/images/portrait.png", "Taking the presenter's portrait", False),
+    ("openai_image", "/p/assets/images/presenter.png", "Taking the presenter's portrait", False),
     ("openai_image", "/p/assets/images/broll_phone.png", "Making a picture", False),
     ("voiceover_tts", None, "Recording the voice", False),
     ("fal_elevenlabs_tts", "/p/assets/audio/A.mp3", "Recording the voice", False),

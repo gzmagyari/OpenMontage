@@ -20,6 +20,9 @@ def test_the_brief_asks_for_plain_progress_notes():
     notes = _brief().split("## Progress notes", 1)[1].split("\n## ", 1)[0]
     assert "Before\neach step, write one short sentence" in notes
     assert "file names, tool and model names, commands and costs" in notes
+    # A real run opened its feed with "I'll start by reading the agent guide, as the project
+    # instructions require": true, and nothing a client should read.
+    assert "never speak of this brief, a guide or your own instructions" in " ".join(notes.split())
 
 
 def test_the_brief_researches_a_named_product():

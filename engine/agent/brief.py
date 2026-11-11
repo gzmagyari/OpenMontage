@@ -298,7 +298,9 @@ Once the final video is rendered and checked, make the two things the client pos
 Nobody can answer you, but the client follows your messages live while the video is made. Before
 each step, write one short sentence on what you are doing or what you just found, in plain words
 about the video (the script, the presenter, the voice, the shots, the music, the captions, the
-edit). Leave file names, tool and model names, commands and costs out of these sentences.
+edit). Leave file names, tool and model names, commands and costs out of these sentences, and
+never speak of this brief, a guide or your own instructions: the client reads about their video,
+not about how you work.
 
 ## Budget, limits, reporting
 

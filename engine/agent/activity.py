@@ -53,46 +53,101 @@ _PEEK_COMMAND = 160
 _PEEK_LIMIT = 20000
 
 # -- the session's own tool calls -----------------------------------------------------------------
-# A shell command, first match wins. The kit's own commands are handled before this list.
-_BASH_RULES: tuple[tuple[str, str, re.Pattern[str]], ...] = tuple(
-    (code, label, re.compile(pattern)) for code, label, pattern in (
-        # A waiting loop. (The launch line prints "BURST EXIT" itself, so those words alone are no wait.)
-        ("shoot_wait", "Waiting for the shoot to finish", r"\buntil\s+grep\b|\bwhile\s+!\s*grep\b"),
-        ("shoot_check", "Checking on the shoot",
-         r"\b(?:cat|tail|head|grep)\b[^|;&>\n]*\bburst\w*\.(?:out|log|txt)\b|\b(?:cat|tail|head)\b[^|;&>\n]*\.out\b"),
-        ("shoot", "Starting the shoot", r"\bnohup\b|\bburst\w*"),
-        ("report", "Writing the production notes", r"RUN_REPORT\.md"),
-        ("post", "Writing the post text", r"post\.json"),
-        ("plan", "Writing the plan", r"video_plan\.md"),
-        ("edit", "Writing the shot list", r"edit\.json"),
-        ("look", "Styling the look", r"src/look\b|tokens\.ts|look\.tsx|fc-list|fontsource|google-fonts"),
-        ("scene", "Building a custom scene", r"src/scenes\b|scenes\.ts|\btsc\b"),
-        ("final_check", "Checking frames of the final video", r"(?:ffmpeg|ffprobe)[^|;&]*exports/"),
-        ("sound_check", "Checking the sound levels", r"volumedetect|ebur128|astats|loudnorm"),
-        ("frames", "Checking frames of the footage", r"\bffmpeg\b|\bffprobe\b"),
-        ("material", "Collecting real material from the site", r"\bcurl\b|\bwget\b|requests\.get|urlretrieve|urlopen|httpx\."),
-        ("pictures", "Looking over the pictures", r"from PIL\b|Image\.open"),
-        ("decisions", "Noting the decisions", r"decision|cost_log|checkpoint"),
-        # One generation call made by hand, outside a batch: a tool is run, not just looked up.
-        ("piece", "Making a piece of the video", r"\.execute\("),
-        (*SETUP, r"provider_menu|tool_registry|registry\.discover|AGENT_GUIDE"),
-        # Reading the studio's own manuals and what is installed.
-        (*SETUP, r"skills/|pipeline_defs|os\.environ|\bwhich\b|^\s*cd\s+/app\b|/app/(?:tools|lib|remotion-composer|schemas)\b"
-                 r"|^\s*(?:cd\s+\S+\s*(?:&&|;)\s*)?ls\b"),
-    ))
-# The kit's commands, in the words of a list ("Mixing the sound, checking the edit").
+# A shell command is named by what is in it. One command often does several things (writes the shot
+# list, then checks it), so every act found in it counts, and the label names the first two in the
+# order the command does them. An act has a weight: a main act leads the label; a minor one (a look
+# at what is there) names the step only when no main act was found; a weak one (reading up) only
+# when nothing else was.
+_MAIN, _MINOR, _WEAK = 0, 1, 2
+
+
+@dataclass(frozen=True)
+class _Act:
+    code: str
+    label: str
+    pattern: re.Pattern[str]
+    weight: int = _MAIN
+    # The pattern is a file's name and the act is writing that file. Only reading it is `read` (a
+    # weak act) or nothing at all; changing it in place is `changed` where that reads truer.
+    file: bool = False
+    read: tuple[str, str] | None = None
+    changed: str | None = None
+    # The act only counts when this is in the command as well.
+    needs: re.Pattern[str] | None = None
+
+
+def _act(code: str, label: str, pattern: str, weight: int = _MAIN, *, needs: str | None = None, **more: Any) -> _Act:
+    return _Act(code, label, re.compile(pattern), weight, needs=re.compile(needs) if needs else None, **more)
+
+
+# The media tools being run (an option or, in a script, a quote follows), not merely named.
+_PROBE = r"\b(?:ffmpeg|ffprobe)\b(?:\s+-|[\"'])"
+# The acts a label never leaves out when the command has them.
+_LEAD = ("shoot", "shoot_wait")
+_ACTS: tuple[_Act, ...] = (
+    # A waiting loop. (The launch line prints "BURST EXIT" itself, so those words alone are no wait.)
+    _act("shoot_wait", "Waiting for the shoot to finish", r"\buntil\s+grep\b|\bwhile\s+!\s*grep\b"),
+    # The batch of generation calls: launched in the background, or its script written.
+    _act("shoot", "Starting the shoot", r"\bnohup\b"),
+    _act("shoot", "Starting the shoot", r"\bburst\w*\.py\b", file=True),
+    _act("report", "Writing the production notes", r"RUN_REPORT\.md", file=True),
+    _act("post", "Writing the post text", r"post\.json", file=True),
+    _act("plan", "Writing the plan", r"video_plan\.md", file=True, read=("plan_read", "Reading the plan again")),
+    _act("edit", "Writing the shot list", r"edit\.json", file=True, changed="Adjusting the shot list",
+         read=("edit_read", "Reading the shot list again")),
+    _act("look", "Styling the look", r"src/look\b|tokens\.ts|look\.tsx", file=True, read=("look", "Styling the look")),
+    _act("look", "Styling the look", r"fc-list|fontsource|google-fonts"),
+    _act("scene", "Building a custom scene", r"src/scenes\b|scenes\.ts", file=True),
+    _act("scene", "Building a custom scene", r"\btsc\b"),
+    _act("final_check", "Checking frames of the final video", r"(?:ffmpeg|ffprobe)[^|;&]*exports/"),
+    _act("takes_check", "Checking the takes", r"\btake[_-]?(?:[A-Za-z0-9]{1,2}\b|\$)", needs=_PROBE),
+    _act("sound_check", "Checking the sound levels", r"volumedetect|ebur128|astats|loudnorm"),
+    _act("material", "Collecting real material from the site",
+         r"\bcurl\b|\bwget\b|requests\.get|urlretrieve|urlopen|httpx\.|sync_playwright|async_playwright|\.goto\("),
+    # One generation call made by hand, outside a batch: a tool is run, not just looked up.
+    _act("piece", "Making a piece of the video", r"\.execute\("),
+    _act("shoot_check", "Checking on the shoot",
+         r"\b(?:cat|tail|head|grep)\b[^|;&>\n]*\bburst\w*\.(?:out|log|txt)\b|\b(?:cat|tail|head)\b[^|;&>\n]*\.out\b", _MINOR),
+    _act("frames", "Checking frames of the footage", _PROBE, _MINOR),
+    _act("pictures", "Looking over the pictures", r"from PIL\b|Image\.open", _MINOR),
+    _act("decisions", "Noting the decisions", r"decision_log|decisions?\.json|cost_log|checkpoint\w*\.json|write_checkpoint", _MINOR),
+    _act(*SETUP, r"provider_menu|tool_registry|registry\.discover|AGENT_GUIDE|\blib\.(?:checkpoint|paths)\b", _WEAK),
+    # Reading the studio's own manuals and what is installed.
+    _act(*SETUP, r"skills/|pipeline_defs|os\.environ|\bwhich\b|^\s*cd\s+/app\b|/app/(?:tools|lib|remotion-composer|schemas)\b"
+                 r"|^\s*(?:cd\s+\S+\s*(?:&&|;)\s*)?ls\b", _WEAK),
+)
+# The kit's commands. Each is a main act where it stands in the command.
 _KIT = re.compile(r"(?:\bkit|lib\.videokit)\s+(render|cover|sheet|mix|check|voice|look|init)\b")
 _KIT_WORDS = {
-    "render": ("render", "rendering the final video"),
-    "cover": ("cover", "choosing the cover picture"),
-    "sheet": ("sheet", "making a sheet of the key frames"),
-    "mix": ("mix", "mixing the sound"),
-    "check": ("check", "checking the edit"),
-    "voice": ("words", "timing every spoken word"),
-    "look": ("look", "setting up the look"),
-    "init": ("look", "setting up the look"),
+    "render": ("render", "Rendering the final video"),
+    "cover": ("cover", "Choosing the cover picture"),
+    "sheet": ("sheet", "Making a sheet of the key frames"),
+    "mix": ("mix", "Mixing the sound"),
+    "check": ("check", "Checking the edit"),
+    "voice": ("words", "Timing every spoken word"),
+    "look": ("look", "Setting up the look"),
+    "init": ("look", "Setting up the look"),
 }
 _DIRECT_RENDER = re.compile(r"\bremotion\s+render\b")
+# What a heredoc writes into a file is that file's text, not something the command does: a plan
+# that mentions the post text is not writing the post text. A script it writes to run is code and
+# stays, like a heredoc fed straight to an interpreter; the batch script's own calls are the shoot.
+_WRITTEN_TEXT = re.compile(
+    r"(\b(?:cat|tee)\b[^\n]*<<-?[ \t]*[\"']?(\w+)[\"']?[^\n]*)\n.*?(?:\n[ \t]*\2[ \t]*(?=\n|$)|\Z)", re.S)
+_SCRIPT_FILE = re.compile(r"\.(?:py|sh|js|mjs)\b")
+_BATCH_FILE = re.compile(r"\bburst\w*\.py\b")
+# How a file's name is used where it stands in a command. Writing it takes evidence: a name that is
+# only there (listed, printed, opened to read, passed to a tool) is a read.
+_CD = re.compile(r"(?:^|[\s(])cd\s+\S*$")
+_REDIRECT = re.compile(r">>?\s*\S*$|\btee\b(?:\s+-\w+)*\s+\S*$")
+_SHELL_CHANGE = re.compile(r"(?:^|[\s(`$])(?:sed\s+(?:-[a-zA-Z]+\s+)*-i|perl\s+-\w*i\w*|mv|rm|touch|patch|truncate)\b")
+_PY_OPEN = re.compile(r"open\(\s*f?[\"'][^\"']*$")
+_PY_WRITE_MODE = re.compile(r"[^\"']*[\"']\s*,\s*[\"'][wax]")
+_PY_SAVES = re.compile(r"[^\"']*[\"']\s*\)\s*\.write")
+# A path put in a variable, in a script that writes something: the write goes through the variable.
+_PY_ASSIGNED = re.compile(r"=[^=\n;]*[\"'][^\"'\n]*$")
+_PY_WRITES = re.compile(r"[\"'][wa]b?\+?[\"']\s*[),]|\.write_text\(|\.write\(|json\.dump\(")
+_MENTIONS_MOST = 40
 
 _IMAGE = re.compile(r"\.(?:png|jpe?g|webp|gif)$", re.I)
 # A file being read, first match wins.
@@ -144,22 +199,98 @@ _TAKE = re.compile(r"take[_-]?([A-Za-z0-9]{1,2})(?:[_.-]|$)")
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,60}[a-z0-9])?")
 
 
-def _sentence(words: list[str]) -> str:
-    text = ", ".join(words[:2])
-    return text[:1].upper() + text[1:]
+def _listed(labels: list[str]) -> str:
+    """Up to two labels as one: "Writing the shot list, checking the edit"."""
+    first, *rest = labels[:2]
+    return first + "".join(", " + label[:1].lower() + label[1:] for label in rest)
+
+
+def _mention(command: str, start: int, end: int, script_writes: bool) -> str:
+    """How the file named at command[start:end] is used there: written, changed in place, read, or
+    only passed through (`cd` into its folder)."""
+    cut = max(command.rfind(mark, 0, start) for mark in "\n;&|") + 1
+    before, after = command[cut:start], command[end:end + 40]
+    if _CD.search(before):
+        return "passed"
+    if _REDIRECT.search(before):
+        return "written"
+    if _SHELL_CHANGE.search(before):
+        return "changed"
+    if _PY_OPEN.search(before):
+        return "changed" if _PY_WRITE_MODE.match(after) else "read"
+    if _PY_SAVES.match(after) or (script_writes and _PY_ASSIGNED.search(before)):
+        return "changed"
+    return "read"
+
+
+def _found(act: _Act, text: str, script_writes: bool) -> tuple[int, int, str, str] | None:
+    """(weight, where, code, label) when the act is in the command."""
+    if act.needs is not None and not act.needs.search(text):
+        return None
+    if not act.file:
+        match = act.pattern.search(text)
+        return (act.weight, match.start(), act.code, act.label) if match else None
+    read_at = wrote_at = None
+    written = False
+    for count, match in enumerate(act.pattern.finditer(text)):
+        if count >= _MENTIONS_MOST:
+            break
+        use = _mention(text, match.start(), match.end(), script_writes)
+        if use == "read":
+            read_at = match.start() if read_at is None else read_at
+        elif use in ("written", "changed"):
+            wrote_at = match.start() if wrote_at is None else wrote_at
+            written = written or use == "written"
+    if wrote_at is not None:
+        return act.weight, wrote_at, act.code, act.label if written or not act.changed else act.changed
+    if read_at is not None and act.read:
+        return _WEAK, read_at, act.read[0], act.read[1]
+    return None
+
+
+def _acted(command: str) -> str:
+    """The command without the text its heredocs only write into files."""
+    def keep(match: re.Match[str]) -> str:
+        opening = match.group(1)
+        runs = _SCRIPT_FILE.search(opening) and not _BATCH_FILE.search(opening)
+        return match.group(0) if runs else opening
+    return _WRITTEN_TEXT.sub(keep, command)
 
 
 def describe_command(command: str) -> tuple[str, str]:
     """(code, label) for a shell command."""
-    kit = list(dict.fromkeys(_KIT.findall(command)))
-    if "render" in kit or _DIRECT_RENDER.search(command):
+    text = _acted(command)
+    kit = [(match.start(), match.group(1)) for match in _KIT.finditer(text)]
+    if any(name == "render" for _, name in kit) or _DIRECT_RENDER.search(text):
         return "render", "Rendering the final video"
-    if kit:
-        return _KIT_WORDS[kit[0]][0], _sentence([_KIT_WORDS[name][1] for name in kit])
-    for code, label, pattern in _BASH_RULES:
-        if pattern.search(command):
-            return code, label
-    return GENERIC
+    script_writes = bool(_PY_WRITES.search(text))
+    # (weight, where in the command, place in the list, code, label)
+    found = [(_MAIN, where, -1, *_KIT_WORDS[name]) for where, name in kit]
+    for place, act in enumerate(_ACTS):
+        hit = _found(act, text, script_writes)
+        if hit:
+            found.append((hit[0], hit[1], place, hit[2], hit[3]))
+    if not found:
+        return GENERIC
+    weight = min(item[0] for item in found)
+    best = sorted(item for item in found if item[0] == weight)
+    if weight == _WEAK:
+        # Reading up on several things at once is getting ready, whatever else was opened with it.
+        best = [item for item in best if item[3] == SETUP[0]] or best
+    if weight != _MAIN:
+        return best[0][3], best[0][4]
+    if any(item[3] == "shoot" for item in best):
+        # The batch's own generation calls are the shoot, not pieces made by hand.
+        best = [item for item in best if item[3] != "piece"]
+    labels = list(dict.fromkeys(item[4] for item in best))
+    lead = next((item for item in best if item[3] in _LEAD), None)
+    if lead is not None and lead[4] not in labels[:2]:
+        return lead[3], _listed([labels[0], lead[4]])
+    return (lead or best[0])[3], _listed(labels)
+
+
+_REFS_NAME = re.compile(r"^refs?[_.-]|reference")
+_PRESENTER_NAME = re.compile(r"portrait|presenter")
 
 
 def _picture(path: str) -> tuple[str, str]:
@@ -167,12 +298,16 @@ def _picture(path: str) -> tuple[str, str]:
     name = folder.rsplit("/", 1)[-1]
     if "cover" in name:
         return "cover_look", "Looking at the cover picture"
+    if "/refs/" in folder or _REFS_NAME.search(name):
+        return "pictures", "Looking over the pictures"
+    if "take" in name:
+        return "takes_look", "Looking at the takes"
     if "sheet" in name:
         return "sheet_look", "Looking at the sheet of key frames"
-    if "/refs/" in folder:
-        return "pictures", "Looking over the pictures"
-    if "portrait" in name:
+    if _PRESENTER_NAME.search(name):
         return "portrait_look", "Looking at the presenter's portrait"
+    if "/assets/images/" in folder:
+        return "picture_look", "Looking at a picture"
     return "frames", "Looking at frames of the video"
 
 
@@ -198,7 +333,8 @@ def describe_tool(name: str, tool_input: Any) -> tuple[str, str]:
             return _picture(path)
         for code, label, pattern in (_READ_RULES if name == "Read" else _WRITE_RULES):
             if pattern.search(path):
-                return code, label
+                # An edit of the shot list that is already there changes it; a write makes it.
+                return (code, "Adjusting the shot list") if (name, code) == ("Edit", "edit") else (code, label)
         return ("checking", "Checking the work") if name == "Read" else GENERIC
     if name == "WebFetch":
         host = _host(str(data.get("url") or ""))
@@ -223,7 +359,7 @@ def describe_desk(tool: str, output_path: Any = None) -> tuple[str, str, bool]:
                 match = _TAKE.search(name)
                 if match:
                     return rule.code, f"Filming take {match.group(1).upper()}", False
-            if rule.code == "picture" and "portrait" in name.lower():
+            if rule.code == "picture" and _PRESENTER_NAME.search(name.lower()):
                 return "portrait", "Taking the presenter's portrait", False
             return rule.code, rule.label, rule.group
     return (*_DESK_GENERIC, False)
