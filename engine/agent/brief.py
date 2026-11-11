@@ -86,7 +86,9 @@ a video as an advert and scroll past it. So, in the script, on screen and in the
 Everything else in this brief stands: the research, the hook, the takes, the motion, the captions,
 the look. Where a stage skill or a kit look asks for a call to action, an offer line, a CTA card or
 an end card, this video has none. Leave them out, and do not put a softer version of the same push
-in their place ("you might want to take a look").
+in their place ("you might want to take a look"). If the request above itself names an offer or
+tells the viewer what to do, the style still holds, because the client chose it for the whole
+video: leave that part out, and say so in one line of the summary.
 
 """
 

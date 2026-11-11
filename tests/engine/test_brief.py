@@ -178,6 +178,10 @@ def test_the_mention_style_sells_the_product_without_a_push():
     # It comes before the locked decisions and outranks a stage skill's or a look's call to action.
     assert brief.index("## The style of this video") < brief.index("## Locked production decisions")
     assert "Where a stage skill or a kit look asks for a call to action, an offer line, a CTA card or an end card" in section
+    # A brief pasted from an older ad may still carry an offer or a push: the style the client chose wins,
+    # and the client is told.
+    assert "If the request above itself names an offer or tells the viewer what to do, the style still holds" in section
+    assert "leave that part out, and say so in one line of the summary" in section
     # The one rule of the brief that names the call to action no longer does.
     assert "under the CTA" not in brief and "a deliberate closing beat." in " ".join(brief.split())
     assert "\u2014" not in brief and "\u2013" not in brief
