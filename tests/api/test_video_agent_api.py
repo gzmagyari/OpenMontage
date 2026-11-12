@@ -52,6 +52,8 @@ class FakeSDK:
         self.request_ids: dict[str, list[str]] = {}  # tool -> what its provider call returned
         self.write_post = True    # the run leaves its post text beside the export
         self.write_cover = True   # ...and its cover picture
+        self.cover_at = 1.6       # the second `kit cover` recorded (None: no record)
+        self.cover_of = None      # the export it recorded (None: the one this call wrote)
         self.answer_post = True   # the follow-up that asks for a missing post text writes it
         self.notes: dict[str, str] = {}  # tool -> what it left for the operator
 
@@ -105,7 +107,8 @@ class FakeSDK:
                 (artifacts / "cost_log.json").write_text(
                     json.dumps([{"item": "fal_avatar take1", "usd": 0.88},
                                 {"item": "tts", "usd": 0.02}]), encoding="utf-8")
-                write_posting(agent_session.Path(project), post=fake.write_post, cover=fake.write_cover)
+                write_posting(agent_session.Path(project), post=fake.write_post, cover=fake.write_cover,
+                              cover_at=fake.cover_at, cover_of=fake.cover_of or name)
                 yield AssistantMessage(content=[TextBlock(text="Exported the final video.")],
                                        model=options.model)
             yield ResultMessage(subtype=fake.subtype, duration_ms=1234, duration_api_ms=1000,
@@ -831,6 +834,11 @@ async def test_a_finished_video_comes_with_its_cover_and_its_post_text(agent_cli
     assert data["status"] == "completed", data.get("error")
     assert data["result"]["post"] == POST
     assert data["result"]["cover"]["name"] == "cover.jpg" and data["result"]["cover"]["content_type"] == "image/jpeg"
+    # The second of the video the frame is from, as `kit cover` recorded it; the file list stays plain.
+    assert data["result"]["cover"]["at_seconds"] == 1.6
+    listed = {key: value for key, value in data["result"]["files"]["cover"].items() if key != "url"}
+    assert listed == {key: value for key, value in data["result"]["cover"].items() if key != "at_seconds"}
+    assert set(listed) == {"name", "size_bytes", "content_type"}
     cover = await agent_client.get(f"/v1/jobs/{data['id']}/files/cover.jpg")
     assert cover.status_code == 200 and cover.content.startswith(b"\xff\xd8\xff")
     assert len(fake_sdk.calls) == 1 and data["warnings"] == []
@@ -866,6 +874,27 @@ async def test_a_follow_up_that_writes_nothing_leaves_the_video_and_says_so(agen
     assert len(fake_sdk.calls) == 2, "one follow-up, never a loop"
     assert data["result"]["post"] is None and data["result"]["video"]["name"] == "video.mp4"
     assert any("has no post text" in warning for warning in data["warnings"])
+
+
+async def test_the_covers_second_is_named_only_when_it_is_this_videos(agent_client, fake_sdk):
+    """A record of another export, or none at all (a cover made by other means): the picture is still
+    returned, without a second. A revision's cover carries the second recorded for the revised export."""
+    fake_sdk.cover_of = "an_earlier_cut.mp4"
+    response = await agent_client.post("/v1/videos", json={"prompt": "A cold brew ad"})
+    data = await _wait_terminal(agent_client, response.json()["id"])
+    assert data["status"] == "completed", data.get("error")
+    assert data["result"]["cover"]["name"] == "cover.jpg" and data["result"]["cover"]["at_seconds"] is None
+
+    fake_sdk.cover_of, fake_sdk.cover_at = None, 2.25
+    revised = await agent_client.post(f"/v1/jobs/{data['id']}/revise", json={"feedback": "A bigger hook"})
+    again = await _wait_terminal(agent_client, revised.json()["id"])
+    assert again["status"] == "completed", again.get("error")
+    assert again["result"]["video"]["name"] == "video_rev2.mp4" and again["result"]["cover"]["at_seconds"] == 2.25
+
+    fake_sdk.cover_at = None
+    response = await agent_client.post("/v1/videos", json={"prompt": "Another cold brew ad"})
+    plain = await _wait_terminal(agent_client, response.json()["id"])
+    assert plain["result"]["cover"]["name"] == "cover.jpg" and plain["result"]["cover"]["at_seconds"] is None
 
 
 async def test_a_video_whose_cover_cannot_be_made_still_completes(agent_client, fake_sdk):

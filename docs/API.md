@@ -177,7 +177,10 @@ A finished job also carries what the video is posted with:
 
 - `result["cover"]`: the cover picture, a file entry like the video's (`cover.jpg`, a full-size
   frame of the video that the director chose with `kit cover`; when it chose none, the frame one
-  second in). `null` only when no frame could be read.
+  second in). `null` only when no frame could be read. It also carries `at_seconds`: the second
+  of the returned video the frame was taken at, for publishing to a network that takes a cover
+  by its timestamp and not as a picture (`null` when the second is not known to be this
+  video's; the picture itself is still there).
 - `result["post"]`: `{"title", "description", "hashtags"}` in the video's language, written by
   the director from the script and the product's real facts and following the video's style (a
   `"mention"` video's post text has no call to action either). The title is at most 100

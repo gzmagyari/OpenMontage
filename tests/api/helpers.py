@@ -11,9 +11,12 @@ POST = {"title": "Cold brew without the wait", "description": "Lumabrew makes co
         "hashtags": ["lumabrew", "coldbrew", "coffeetok", "morningroutine"]}
 
 
-def write_posting(project: Path, *, post: bool = True, cover: bool = True) -> None:
+def write_posting(project: Path, *, post: bool = True, cover: bool = True,
+                  cover_at: float | None = 1.6, cover_of: str = "video.mp4") -> None:
     """What a real run leaves beside its export: the cover picture and the post text. Call it after
-    the export is written: a cover older than the video counts as out of date."""
+    the export is written: a cover older than the video counts as out of date. `kit cover` also
+    records which second of which export the frame is (`cover_at`, `cover_of`); None leaves the
+    record out, as when a cover was made by other means."""
     import json
 
     if post:
@@ -22,6 +25,13 @@ def write_posting(project: Path, *, post: bool = True, cover: bool = True) -> No
     if cover:
         (project / "exports").mkdir(parents=True, exist_ok=True)
         (project / "exports" / "cover.jpg").write_bytes(b"\xff\xd8\xff fake cover")
+        record = project / "work" / "kit" / "cover.json"
+        if cover_at is not None:
+            record.parent.mkdir(parents=True, exist_ok=True)
+            record.write_text(json.dumps({"file": "exports/cover.jpg", "at": cover_at, "video": cover_of}),
+                              encoding="utf-8")
+        else:
+            record.unlink(missing_ok=True)
 
 
 def ledger_dir(options) -> Path:

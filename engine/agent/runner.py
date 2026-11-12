@@ -195,6 +195,24 @@ async def _ensure_cover(ctx: JobContext, project_dir: Path, video: Path) -> Path
         return None
 
 
+def _cover_second(project_dir: Path, video: Path) -> float | None:
+    """The second of the returned video that its cover frame was taken at, from the kit's own record
+    (`kit cover` writes it beside the cover). None when there is no record or it is of another
+    export: a second is only named when it is known to be this video's."""
+    from lib.videokit import cover
+
+    try:
+        record = json.loads((project_dir / cover.RECORD_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("video") != video.name:
+        return None
+    at = record.get("at")
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or at < 0:
+        return None
+    return round(float(at), 3)
+
+
 # -- references --------------------------------------------------------------------
 async def _download_reference(url: str, dest: Path) -> None:
     import httpx
@@ -775,7 +793,10 @@ async def _run_agent_job(ctx: JobContext, *, prompt: str, project_dir: Path,
     cover_path = await _ensure_cover(ctx, project_dir, videos[-1])
     if cover_path is not None:
         await asyncio.to_thread(shutil.copy2, cover_path, ctx.files_dir / "cover.jpg")
-        cover_entry = files["cover"] = _file_entry(ctx.files_dir / "cover.jpg")
+        files["cover"] = _file_entry(ctx.files_dir / "cover.jpg")
+        # With the second of the video the frame is from: a network that takes a cover by its
+        # timestamp (not as a picture) can then show the same frame.
+        cover_entry = {**files["cover"], "at_seconds": _cover_second(project_dir, videos[-1])}
     post = read_post(project_dir)
     for extra in (project_dir / "RUN_REPORT.md", agent_dir / "journal.jsonl", agent_dir / "transcript.jsonl"):
         if extra.is_file():
