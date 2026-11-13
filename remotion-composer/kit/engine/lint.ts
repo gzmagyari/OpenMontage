@@ -59,6 +59,29 @@ export function lintResolved(resolved: Resolved, edit: Edit, meta: LookMeta = {}
     }
   }
 
+  // A before and after reads left to right and ends on the after. BeforeAfter's defaults do exactly that: the
+  // after on the left of the divider, the divider running from 0 (left edge) to 1 (right edge). Moving the after
+  // to the right without turning the divider round uncovers the before instead.
+  const wipes: Array<{props: Record<string, unknown>; id: string; label: string}> = [];
+  for (const item of resolved.main) {
+    if (item.kind === 'scene' && item.scene === 'BeforeAfter') wipes.push({props: item.props ?? {}, id: item.id, label: item.label});
+  }
+  for (const o of resolved.overlays) {
+    if (o.kind === 'scene' && o.name === 'BeforeAfter') wipes.push({props: o.props ?? {}, id: o.id, label: o.name});
+  }
+  for (const w of wipes) {
+    const afterSide = w.props.afterSide === 'right' ? 'right' : 'left';
+    const wipe = (w.props.wipe ?? {}) as {from?: unknown; to?: unknown};
+    const from = typeof wipe.from === 'number' ? wipe.from : afterSide === 'left' ? 0 : 1;
+    const to = typeof wipe.to === 'number' ? wipe.to : afterSide === 'left' ? 1 : 0;
+    const afterShown = (divider: number) => (afterSide === 'left' ? divider : 1 - divider);
+    if (afterShown(to) < afterShown(from)) {
+      d('warning', 'wipe-ends-on-before', `"${w.label}" wipes from the after picture back to the before (the after on the ${afterSide}, the divider from ${from} to ${to}). A before and after ends on the after: leave afterSide, wipe.from and wipe.to out.`, w.id);
+    } else if (to < from) {
+      d('warning', 'wipe-right-to-left', `"${w.label}" sweeps from right to left, against the way people read. Leave afterSide, wipe.from and wipe.to out: the after on the left and the divider from 0 to 1 sweep left to right.`, w.id);
+    }
+  }
+
   if (typeof edit.target_seconds === 'number') {
     const total = resolved.durationInFrames / resolved.fps;
     if (Math.abs(total - edit.target_seconds) > 1.5) {

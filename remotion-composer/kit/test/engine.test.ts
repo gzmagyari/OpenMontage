@@ -259,6 +259,19 @@ test('the edit is checked before anything is resolved', () => {
   assert.ok(codes({...edit(), main: [{video: 'a.mp4', until: 2, enter: 'spin'}]}).includes('error:main[0].enter'));
 });
 
+test('a before and after that ends on the before, or sweeps right to left, is flagged', () => {
+  const codes = (props: Record<string, unknown>) => {
+    const e = edit();
+    e.main = e.main.map((item) => ('scene' in item && item.scene === 'BeforeAfter' ? {...item, props: {pair: 'refs/pet', ...props}} : item));
+    return lintResolved(resolveEdit({edit: e, voice: voice()}), e).map((d) => d.code).filter((c) => c.startsWith('wipe-'));
+  };
+  assert.deepEqual(codes({}), []);                                                   // the defaults: left to right, ends on the after
+  assert.deepEqual(codes({afterSide: 'right', wipe: {from: 0, to: 1}}), ['wipe-ends-on-before']);  // what a real video shipped first
+  assert.deepEqual(codes({afterSide: 'right'}), ['wipe-right-to-left']);             // ends on the after, but against reading
+  assert.deepEqual(codes({wipe: {from: 1, to: 0}}), ['wipe-ends-on-before']);
+  assert.deepEqual(codes({wipe: {from: 1, to: 1}}), []);                             // holds the after: no sweep at all
+});
+
 test('the checker flags what fights for the same part of the frame', () => {
   const e = edit();
   e.overlays = [{tag: 'one', from: 1, until: 5}, {tag: 'two', from: 3, until: 7}, {tag: 'low', from: 1, until: 2, zone: 'lower'}];
