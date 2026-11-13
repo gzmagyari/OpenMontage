@@ -1054,6 +1054,12 @@ of a picture or clip, or `{"image" | "video" | "color", "blur", "dim"}`.
 ("refs/gran" means `refs/gran_before.jpg` and `refs/gran_after.jpg`) or `before` + `after`;
 `labels`; `afterSide`; `wipe` (`start`, `seconds`, `from`, `to`); `zoom`; `frame: "card"` for
 landscape pictures in a tall video. The handle and labels are drawn by the look.
+Which way it wipes: `wipe.from` and `wipe.to` are the divider's position (0 the left edge, 1 the
+right edge) and `afterSide` is the side of the divider the after picture is on. The defaults (the
+after on the left, the divider from 0 to 1) open on the before and sweep left to right, uncovering
+the after: the way people read and the order of the story. Leave `afterSide`, `from` and `to` out
+and time the sweep to the words with `start` and `seconds`. With the after on the right, a
+divider from 0 to 1 uncovers the before instead; `kit check` warns about that.
 
 `KineticText` - big words that arrive one after another; a statement that needs no footage.
 Props: `text` ("\n" starts a line) or `lines`; `emphasis` (words in the accent colour);
