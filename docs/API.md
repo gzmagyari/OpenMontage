@@ -273,6 +273,46 @@ least 2 GB free and writes which it was into `renders/kit_render.json` (`chrome_
 in `remotion-composer/kit/engine/browserTemp.ts`. `KIT_CHROME_TEMP=disk` on the container switches
 this off for every job.
 
+## Drawing in the cloud
+
+A video's final draw is the heavy step: on this machine it holds about 4.6 GB of memory for about a
+minute (Chrome, Remotion's frame cache for the clips, the encoder), so the memory of the server sets how
+many videos can finish at the same moment. `KIT_RENDER=cloud` on the container moves that one step to
+Remotion Lambda. Everything else of a job stays where it is.
+
+- `kit render` stages the project as always, then asks for the draw before it opens a browser. In a job
+  the request is a paid tool call like any other (`cloud_render`, `tools/video/cloud_render.py`): the
+  paid-tools desk holds it to the budget, runs it in a provider box and writes its real cost into the
+  ledger. The agent box still has no network and none of the credentials.
+- The provider box uploads the composition with the video's media to the server's own S3 bucket, draws it
+  with the deployed function, downloads the file to `renders/<name>_raw.mp4` and deletes what it uploaded
+  (`remotion-composer/kit/cli/cloud.mjs`). The drawn file is deleted too, and expires by itself after a
+  day if a call was cut off; an upload left behind by such a call is removed by a later one.
+- `kit render` then finishes the file exactly as after a local draw (sound, colour tags, checks), and
+  `renders/kit_render.json` says `renderer: "cloud"` with what the upload, the draw and the download took.
+- If the draw does not come back as a file, for any reason, `kit render` draws on this machine as before
+  and the record says why (`renderer: "local"`, `cloud.error`). A video is never lost to the cloud step.
+
+Measured with 13 to 29 second videos (2026-11-16): the step takes about as long as a local draw (an upload
+of 15 s, a draw of 20 to 50 s, a download of 3 s), costs $0.015 to $0.032 in function time, and leaves this
+machine holding under 1 GB instead of 4.6 GB. Five at once did not slow each other's draw; their uploads
+shared the line.
+
+Setting it up, once per AWS account and region:
+
+1. A role and a user with the two policies Remotion prints (`npx remotion lambda policies role` and
+   `... policies user`), and `npx remotion lambda policies validate`.
+2. `npx remotion lambda functions deploy` with the same Remotion version as `remotion-composer`'s
+   `@remotion/lambda` (the function is found by its version). A function with 3008 MB of memory, 4096 MB
+   of disk and a 300 second timeout drew every video above.
+3. On the container: `REMOTION_AWS_ACCESS_KEY_ID`, `REMOTION_AWS_SECRET_ACCESS_KEY`, `REMOTION_AWS_REGION`
+   and `KIT_RENDER=cloud`.
+
+One draw uses 20 to 45 functions, so an account's limit on functions running at once sets how many videos
+can be drawn in the same moment (`npx remotion lambda quotas`). `KIT_CLOUD_FRAMES_PER_FUNCTION` gives each
+function more frames, which uses fewer of them for one video and takes a little longer. `@remotion/lambda`
+has to stay at exactly the version of the other Remotion packages.
+
 ## A voice for each video
 
 A video with a spoken script gets one voice, made for its presenter (`tools/audio/voiceover_tts.py`,

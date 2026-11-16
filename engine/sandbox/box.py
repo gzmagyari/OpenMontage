@@ -157,6 +157,10 @@ class AgentBox:
         # of memory (remotion-composer/kit/engine/browserTemp.ts). Nothing else is passed on.
         if os.environ.get("KIT_CHROME_TEMP") == "disk":
             env["KIT_CHROME_TEMP"] = "disk"
+        # The other switch for the kit's renders: "cloud" has `kit render` ask the paid-tools desk
+        # for the final draw (tools/video/cloud_render.py) before it draws on this machine.
+        if os.environ.get("KIT_RENDER") == "cloud":
+            env["KIT_RENDER"] = "cloud"
         # Tools check that their provider is configured; the desk holds the real values.
         for name in secret_names(os.environ):
             env[name] = "held-by-the-desk"

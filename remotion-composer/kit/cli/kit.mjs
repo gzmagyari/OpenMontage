@@ -701,10 +701,40 @@ function soundPlacement(offsets) {
   return 'sound on the picture';
 }
 
+/** The final draw on Remotion Lambda (cli/cloud.mjs), when the server is set to it with
+ *  KIT_RENDER=cloud. A local draw holds several gigabytes of memory for a minute; in the cloud
+ *  the videos of a busy server stop competing for it. The media is staged here; the call itself
+ *  needs the network and the server's credentials, so it leaves through `lib.videokit.cloud`,
+ *  which in a job goes to the paid-tools desk. Anything short of a finished file is an answer
+ *  of "not this time", and the caller draws locally as before. */
+function cloudDraw(resolved, edit, name, raw) {
+  try {
+    stagePublic(resolved, edit);
+    fs.writeFileSync(path.join(work, 'cloud_props.json'), JSON.stringify({resolved}));
+    fs.rmSync(raw, {force: true});
+    const seconds = (resolved.durationInFrames / resolved.fps).toFixed(2);
+    const r = spawnSync(process.env.KIT_PYTHON || 'python', ['-m', 'lib.videokit.cloud', project, name, seconds],
+      {cwd: path.resolve(KIT_DIR, '..', '..'), encoding: 'utf8', timeout: 20 * 60 * 1000, maxBuffer: 16 * 1024 * 1024});
+    let facts = null;
+    for (const line of String(r.stdout || '').trim().split('\n').reverse()) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === 'object') {
+          facts = parsed;
+          break;
+        }
+      } catch {}
+    }
+    if (facts?.ok && fs.existsSync(raw)) return facts;
+    return {ok: false, error: String(facts?.error ?? (r.stderr || '').trim().split('\n').pop() ?? r.error?.message ?? 'no answer').slice(0, 600)};
+  } catch (err) {
+    return {ok: false, error: String(err?.message ?? err).slice(0, 600)};
+  }
+}
+
 async function render(prepared) {
   const {renderMedia} = await import('@remotion/renderer');
   const resolved = prepared.resolved;
-  const stage = await openStage(resolved, prepared.edit);
   const renders = path.join(project, 'renders');
   const exportsDir = path.join(project, 'exports');
   fs.mkdirSync(renders, {recursive: true});
@@ -713,13 +743,28 @@ async function render(prepared) {
   const raw = path.join(renders, `${name}_raw.mp4`);
   const out = path.join(exportsDir, `${name}.mp4`);
   let t = Date.now();
-  try {
-    await renderMedia({
-      composition: stage.composition, serveUrl: stage.serveUrl, inputProps: stage.inputProps, codec: 'h264', outputLocation: raw,
-      crf: 18, pixelFormat: 'yuv420p', colorSpace: 'bt709', puppeteerInstance: stage.browser, onBrowserLog: stage.onBrowserLog, logLevel: 'error',
-    });
-  } finally {
-    await closeBrowser(stage.browser);
+  // Where the picture was drawn, and what the cloud said when it was asked and did not draw it.
+  let renderer = 'local';
+  let cloud = null;
+  let stage = null;
+  if (process.env.KIT_RENDER === 'cloud') {
+    cloud = cloudDraw(resolved, prepared.edit, name, raw);
+    if (cloud.ok) {
+      renderer = 'cloud';
+      stage = {logs: []};
+    }
+  }
+  if (!stage) {
+    stage = await openStage(resolved, prepared.edit);
+    t = Date.now();
+    try {
+      await renderMedia({
+        composition: stage.composition, serveUrl: stage.serveUrl, inputProps: stage.inputProps, codec: 'h264', outputLocation: raw,
+        crf: 18, pixelFormat: 'yuv420p', colorSpace: 'bt709', puppeteerInstance: stage.browser, onBrowserLog: stage.onBrowserLog, logLevel: 'error',
+      });
+    } finally {
+      await closeBrowser(stage.browser);
+    }
   }
   lap('render', t);
   t = Date.now();
@@ -774,8 +819,11 @@ async function render(prepared) {
     // left it, and in the finished file.
     sound_offset_ms: hasAudio ? {rendered: lag ? Math.round(lag.seconds * 1000) : null, exported: after ? Math.round(after.seconds * 1000) : null} : null,
     // Where Chrome kept its temporary files: 'memory', or 'disk' when it could not (a render
-    // on disk can run several times longer, see engine/browserTemp.ts).
-    chrome_temp: browserTempKind,
+    // on disk can run several times longer, see engine/browserTemp.ts). Null for a cloud draw.
+    chrome_temp: renderer === 'cloud' ? null : browserTempKind,
+    // Where the picture was drawn: 'local', or 'cloud' (cli/cloud.mjs) with what that took. A
+    // server set to the cloud that drew locally says why in cloud.error.
+    renderer, ...(cloud ? {cloud} : {}),
     problems, findings: layoutFindings(stage.logs, resolved, prepared.diags),
   };
   fs.writeFileSync(path.join(renders, 'kit_render.json'), JSON.stringify(result, null, 1));
