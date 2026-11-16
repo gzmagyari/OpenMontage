@@ -233,6 +233,97 @@ can check the box without running anything in the container. After a rebuild, ru
 rehearses the director's planning step on real prompts, in a throwaway container: model calls only,
 nothing can be bought, and without `--spend` it calls no model at all (see the script).
 
+## Deploying from the pipeline
+
+`.github/workflows/docker-publish.yml` can put every build of `main` in place on a Docker host:
+tests, image, then one SSH request to the host. The deploy job is off until a repository sets it up
+(below), so a copy of this repository never tries to deploy anywhere.
+
+What happens on the host (`docker/deploy/`):
+
+1. The pipeline's key may run one command there, `server-entry.sh`. It accepts
+   `deploy sha256:<digest>` and nothing else, pulls that build of the repository named in the host's
+   `deploy.json`, takes `deploy.py` out of the image and runs it. So the deploy logic arrives with
+   every build and nothing on the host has to be edited when it changes.
+2. `deploy.py` takes a lock and the build's security profile (out of the image, so the two always
+   match). When the running container already has the same contents and the same settings it stops
+   there: a push that changes nothing in the image restarts nothing.
+3. Otherwise it waits up to `quiet_wait` seconds for a moment with no job running, stops the
+   container (a running job is parked and continues after the start, see "Endpoints"), keeps it
+   aside, starts the new build and waits for `GET /readyz`.
+4. A build that does not get ready is removed and the previous container is started again, and the
+   run fails. What that build logged stays on the host (`releases/<time>/failed.log`), never in the
+   pipeline's log, which is public in a public repository.
+5. Images of this repository other than the new and the previous one are deleted.
+
+Exit codes of the run: 0 in place (or nothing to do), 1 not in place and what ran before runs again
+(or nothing ran before), 2 not in place and the previous build did not come back, 64 refused, 75
+another deploy is running.
+
+### Setting it up, once
+
+On the host, one folder (the examples use `/opt/openmontage`, mode 700) with three files:
+
+- `engine.env`: the container's settings (`--env-file`), keys included. It never leaves the host.
+- `deploy.json`: how the container is run on this host. For example:
+
+  ```json
+  {
+    "repository": "ghcr.io/<owner>/openmontage-api",
+    "env_file": "/opt/openmontage/engine.env",
+    "publish": ["127.0.0.1:8710"],
+    "cpuset": "0-5",
+    "memory": "8g"
+  }
+  ```
+
+- `deploy`: a copy of `docker/deploy/server-entry.sh`, mode 700.
+
+And one line in the login's `~/.ssh/authorized_keys`, which ties the pipeline's key to that script
+and to nothing else:
+
+```
+restrict,command="/opt/openmontage/deploy" ssh-ed25519 AAAA... pipeline
+```
+
+The host needs Docker and `python3` (3.6 or newer). A private image also needs the host logged in
+to its registry.
+
+| `deploy.json` | Meaning | Default |
+|---|---|---|
+| `repository` | the only image repository this host deploys | required |
+| `env_file` | absolute path of the settings file | required |
+| `publish` | host addresses that reach the API, each `IP:PORT` (the container listens on 8080) | required |
+| `probe` | the address `/readyz` is asked on | the first of `publish` |
+| `name` | the container's name | `openmontage-api` |
+| `volume` | a Docker volume, or an absolute folder, mounted at `/data` | `openmontage-data` |
+| `cpuset`, `memory` | `--cpuset-cpus` and `--memory` | not set |
+| `shm_size` | `--shm-size` | `2g` |
+| `stop_timeout` | seconds a stopping container gets to park its jobs | 40 |
+| `ready_timeout` | seconds a started build gets to answer ready | 180 |
+| `stable_seconds` | it must still be ready this long after its first yes | 5 |
+| `quiet_wait` | seconds to wait for a moment with no job running; 0 never waits | 600 |
+| `keep_releases` | how many release folders (the runs' records) are kept | 10 |
+
+A spec with any other key is refused, and so is any value that is not what the table says: nothing
+in it is ever passed to a shell. The three box options and `--init` are always applied.
+
+In the repository's settings:
+
+- an environment named `production`, limited to the `main` branch, with the secrets `DEPLOY_HOST`,
+  `DEPLOY_PORT`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` (the private key) and `DEPLOY_KNOWN_HOSTS` (the
+  host's `known_hosts` lines; for a port other than 22 they have the `[host]:port` form);
+- the repository variable `DEPLOY_ENABLED` set to `true`.
+
+### By hand
+
+"Run workflow" on `main` with `image_tag` empty tests, builds and deploys as a push does. A changed
+`engine.env` or `deploy.json` on the host takes effect with it. With `image_tag` set to an existing
+tag (`sha-<commit>`) nothing is built and that build is deployed: this is how to go back.
+
+The pipeline also starts each build once on its own runner, through the same two files ("Rehearse
+the deploy on the runner"). That job never holds a deploy back.
+
 ## Agent boxes
 
 A video job's agent is driven by the customer's prompt, so it never runs next to the server. Each

@@ -1,8 +1,16 @@
-# Build the API image and push it to GHCR, so deployments just pull
-# ghcr.io/gzmagyari/openmontage-api instead of building on the server.
-# Pushes to main publish :latest plus an immutable :sha-<short> tag to pin
-# deployments to; a v* tag publishes that version tag as well.
-# The MultiSaaS platform consumes this image (its docs/openmontage-video-api.md).
+# Test, build the API image, push it to GHCR, and (where a repository has set it up) put the build
+# in place on a Docker host. docs/API.md, "Deploying from the pipeline", has the whole picture.
+#
+#   push to main      tests -> image (:latest and an immutable :sha-<short>) -> deploy
+#   push of a v* tag  tests -> image (that version tag as well)
+#   Run workflow      the same for the chosen branch; or, with "image_tag" filled in, no build at
+#                     all: that existing build is deployed (going back, or applying a changed
+#                     setting on the host)
+#
+# The deploy job only exists for a repository that sets the variable DEPLOY_ENABLED to "true" and
+# has an environment named "production" holding the host's login. Everywhere else it is skipped.
+# This file and every run's log are public in a public repository: nothing here names a host, and
+# the host's side prints plain status lines only.
 
 name: Publish Docker image
 
@@ -13,21 +21,38 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Deploy an existing build without building, for example sha-02cfdc9. Empty: build this branch."
+        required: false
+        default: ""
+        type: string
 
-concurrency:
-  group: docker-publish-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/openmontage-api
 
 jobs:
+  test:
+    name: Tests
+    if: ${{ !inputs.image_tag }}
+    uses: ./.github/workflows/ci.yml
+
   publish:
     name: Build and push
+    needs: test
     runs-on: ubuntu-latest
+    # A newer push to the same branch replaces a build that is still running.
+    concurrency:
+      group: docker-publish-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
 
     steps:
       - name: Checkout repository
@@ -54,6 +79,7 @@ jobs:
             type=ref,event=tag
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -65,3 +91,123 @@ jobs:
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=min
+
+  # The build, started once on this runner the way a host starts it: through the host's entry script
+  # and the deploy helper that travel in the image. It proves the image carries a working helper and
+  # comes up ready. It does not hold the deploy back yet: whether a job's box can be built on a
+  # hosted runner is not known, and a host's own ready check is what decides there.
+  rehearse:
+    name: Rehearse the deploy on the runner
+    needs: publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: A pretend host
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          set -eu
+          host="$RUNNER_TEMP/host"
+          mkdir -p "$host"
+          install -m 700 docker/deploy/server-entry.sh "$host/deploy"
+          printf 'ANTHROPIC_API_KEY=rehearsal\nFAL_KEY=rehearsal\n' > "$host/engine.env"
+          cat > "$host/deploy.json" <<EOF
+          {"repository": "${IMAGE,,}", "name": "openmontage-rehearsal", "env_file": "$host/engine.env",
+           "volume": "openmontage-rehearsal", "publish": ["127.0.0.1:8710"], "quiet_wait": 0,
+           "ready_timeout": 240}
+          EOF
+          SSH_ORIGINAL_COMMAND="deploy $DIGEST" "$host/deploy"
+          echo "--- the same build again ---"
+          SSH_ORIGINAL_COMMAND="deploy $DIGEST" "$host/deploy"
+
+      - name: What the build said, when it did not get ready
+        if: failure()
+        run: |
+          for folder in "$RUNNER_TEMP"/host/releases/*/; do
+            if [ -f "$folder/readyz.json" ]; then cat "$folder/readyz.json"; echo; fi
+            if [ -f "$folder/failed.log" ]; then tail -n 60 "$folder/failed.log"; fi
+          done
+
+  deploy:
+    name: Deploy
+    needs: publish
+    # Only main, only where a repository has switched it on, and after a good build (or for an
+    # existing build named by hand).
+    if: >-
+      always() && vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
+      (needs.publish.result == 'success' ||
+       (needs.publish.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.image_tag))
+    runs-on: ubuntu-latest
+    environment: production
+    # One deploy at a time, in order, and never stopped half-way by a newer run.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    timeout-minutes: 45
+
+    steps:
+      - name: Choose the build
+        id: build
+        env:
+          TAG: ${{ inputs.image_tag }}
+          BUILT: ${{ needs.publish.outputs.digest }}
+        run: |
+          set -eu
+          if [ -n "$TAG" ]; then
+            printf '%s' "$TAG" | grep -Eqx '[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}' || { echo "not a tag: refused"; exit 1; }
+            digest=$(docker buildx imagetools inspect "${IMAGE,,}:$TAG" --format '{{json .Manifest}}' | jq -r '.digest')
+          else
+            digest=$BUILT
+          fi
+          printf '%s' "$digest" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "there is no build to deploy"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # Two pushes close together must not end with the older one in place.
+      - name: Only the newest commit of main deploys
+        id: newest
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "a newer commit is on main: its own run deploys"
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The key in the environment can do one thing on the host: ask for a build of this image by
+      # digest (docker/deploy/server-entry.sh). The host's identity is pinned, so the request only
+      # ever reaches the real host.
+      - name: Ask the host for the build
+        if: steps.newest.outputs.superseded != 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -eu
+          umask 077
+          for name in DEPLOY_HOST DEPLOY_PORT DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            eval "value=\${$name:-}"
+            [ -n "$value" ] || { echo "the production environment lacks the secret $name"; exit 1; }
+          done
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/deploy_known_hosts"
+          ssh -i "$HOME/.ssh/deploy_key" -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/deploy_known_hosts" -o StrictHostKeyChecking=yes \
+              -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o ConnectTimeout=20 -o LogLevel=ERROR \
+              -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "deploy $DIGEST"
+
+      - name: Remove the key from the runner
+        if: always()
+        run: rm -f "$HOME/.ssh/deploy_key" "$HOME/.ssh/deploy_known_hosts"

@@ -1,24 +1,23 @@
 name: CI
 
+# Runs for pull requests, and is called by the publish pipeline (docker-publish.yml) for every push
+# to main: an image is only built, and a host only updated, from a tree whose tests pass.
 on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
+  workflow_call:
 
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   validate:
     name: Validate Python
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
       - name: Checkout repository
@@ -32,15 +31,32 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-api.txt
+
+      # The image runs Node 22 (docker/Dockerfile). The kit's own unit tests are TypeScript that
+      # node runs directly, which an older node cannot.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      # The API layer's requirements too: tests/api and tests/engine import the agent SDK.
       - name: Install dependencies
-        run: make install-dev
+        run: |
+          make install-dev
+          make api-install
 
       - name: Run lint smoke checks
         run: make lint
 
       - name: Run test suite
         run: make test
+
+      # docker/deploy/deploy.py runs under the Docker host's own python3, which can be as old as 3.6.
+      - name: Deploy helper under Python 3.6
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src python:3.6-slim \
+            sh -c "python docker/deploy/deploy.py --self-check && python -m unittest discover -s tests/deploy"
